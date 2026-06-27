@@ -118,6 +118,15 @@ static const int generic_X_keymap[] = {
     0, 10, XK_underscore,
     0, 59, XK_equal,
     0, 59, XK_plus,
+#ifdef XK_dead_acute
+    0, 12, XK_dead_acute,
+#endif
+#ifdef XK_dead_caron
+    0, 12, XK_dead_caron,
+#endif
+#ifdef XK_dead_abovering
+    0, 45, XK_dead_abovering,
+#endif
     0, 45, XK_quoteleft,
     0, 45, XK_asciitilde,
     0, 89, XK_F16, /* Copy, Sun-4 kbd L6 */
@@ -148,7 +157,13 @@ static const int generic_X_keymap[] = {
     0, 38, XK_J,
     0, 9, XK_K,
     0, 26, XK_L,
+#ifdef XK_uring
+    0, 43, XK_uring,
+#endif
     0, 43, XK_semicolon,
+#ifdef XK_section
+    0, 28, XK_section,
+#endif
     0, 28, XK_quoteright,
     0, 105, XK_backslash,
     0, 105, XK_bar,
