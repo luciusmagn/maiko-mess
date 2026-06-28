@@ -159,7 +159,7 @@ static void handle_X_key(XKeyEvent *event, int upflg)
       if (sent->neutral_lshift && x_lshift_down) kb_trans(KEY_LEFTSHIFT, TRUE);
       if (sent->neutral_rshift && x_rshift_down) kb_trans(KEY_RIGHTSHIFT, TRUE);
       kb_trans(sent->code, TRUE);
-      if (sent->synth_shift) kb_trans(KEY_RIGHTSHIFT, TRUE);
+      if (sent->synth_shift) kb_trans(KEY_LEFTSHIFT, TRUE);
       if (sent->neutral_lshift && x_lshift_down) kb_trans(KEY_LEFTSHIFT, FALSE);
       if (sent->neutral_rshift && x_rshift_down) kb_trans(KEY_RIGHTSHIFT, FALSE);
       memset(sent, 0, sizeof(*sent));
@@ -179,7 +179,7 @@ static void handle_X_key(XKeyEvent *event, int upflg)
 
       if (needs_shift) {
         if (!x_lshift_down && !x_rshift_down) {
-          kb_trans(KEY_RIGHTSHIFT, FALSE);
+          kb_trans(KEY_LEFTSHIFT, FALSE);
           sent->synth_shift = TRUE;
         }
       } else {
