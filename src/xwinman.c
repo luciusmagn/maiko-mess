@@ -246,6 +246,16 @@ void process_Xevents(DspInterface dsp)
       }
     else if (report.xany.window == dsp->LispWindow)
       switch (report.xany.type) {
+        case KeyPress:
+          kb_trans(SUNLispKeyMap[(report.xkey.keycode) - KEYCODE_OFFSET], FALSE);
+          DoRing();
+          if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
+          break;
+        case KeyRelease:
+          kb_trans(SUNLispKeyMap[(report.xkey.keycode) - KEYCODE_OFFSET], TRUE);
+          DoRing();
+          if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
+          break;
         case ConfigureNotify:
           lisp_Xconfigure(dsp, report.xconfigure.x, report.xconfigure.y, (unsigned)report.xconfigure.width,
                           (unsigned)report.xconfigure.height);
