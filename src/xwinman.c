@@ -40,6 +40,7 @@ extern DLword *EmMouseX68K, *EmMouseY68K, *EmKbdAd068K, *EmRealUtilin68K;
 extern LispPTR *CLastUserActionCell68k;
 extern int KBDEventFlg;
 extern u_char *SUNLispKeyMap;
+extern void DoRing(void);
 #define KEYCODE_OFFSET 7 /* Sun Keycode offset */
 
 /* bits within the EmRealUtilin word */
@@ -64,6 +65,12 @@ typedef struct {
 static XSentKey x_sent_keys[256];
 static int x_lshift_down = FALSE;
 static int x_rshift_down = FALSE;
+
+static void record_key_event(void)
+{
+  DoRing();
+  if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
+}
 
 static int ascii_to_lisp_key(unsigned char c, u_char *code, int *needs_shift)
 {
@@ -156,12 +163,28 @@ static void handle_X_key(XKeyEvent *event, int upflg)
 
   if (upflg) {
     if (sent && sent->handled) {
-      if (sent->neutral_lshift && x_lshift_down) kb_trans(KEY_LEFTSHIFT, TRUE);
-      if (sent->neutral_rshift && x_rshift_down) kb_trans(KEY_RIGHTSHIFT, TRUE);
+      if (sent->neutral_lshift && x_lshift_down) {
+        kb_trans(KEY_LEFTSHIFT, TRUE);
+        record_key_event();
+      }
+      if (sent->neutral_rshift && x_rshift_down) {
+        kb_trans(KEY_RIGHTSHIFT, TRUE);
+        record_key_event();
+      }
       kb_trans(sent->code, TRUE);
-      if (sent->synth_shift) kb_trans(KEY_LEFTSHIFT, TRUE);
-      if (sent->neutral_lshift && x_lshift_down) kb_trans(KEY_LEFTSHIFT, FALSE);
-      if (sent->neutral_rshift && x_rshift_down) kb_trans(KEY_RIGHTSHIFT, FALSE);
+      record_key_event();
+      if (sent->synth_shift) {
+        kb_trans(KEY_LEFTSHIFT, TRUE);
+        record_key_event();
+      }
+      if (sent->neutral_lshift && x_lshift_down) {
+        kb_trans(KEY_LEFTSHIFT, FALSE);
+        record_key_event();
+      }
+      if (sent->neutral_rshift && x_rshift_down) {
+        kb_trans(KEY_RIGHTSHIFT, FALSE);
+        record_key_event();
+      }
       memset(sent, 0, sizeof(*sent));
       return;
     }
@@ -180,23 +203,33 @@ static void handle_X_key(XKeyEvent *event, int upflg)
       if (needs_shift) {
         if (!x_lshift_down && !x_rshift_down) {
           kb_trans(KEY_LEFTSHIFT, FALSE);
+          record_key_event();
           sent->synth_shift = TRUE;
         }
       } else {
         if (x_lshift_down) {
           kb_trans(KEY_LEFTSHIFT, TRUE);
+          record_key_event();
           sent->neutral_lshift = TRUE;
         }
         if (x_rshift_down) {
           kb_trans(KEY_RIGHTSHIFT, TRUE);
+          record_key_event();
           sent->neutral_rshift = TRUE;
         }
       }
 
       kb_trans(code, FALSE);
+      record_key_event();
 
-      if (sent->neutral_lshift) kb_trans(KEY_LEFTSHIFT, FALSE);
-      if (sent->neutral_rshift) kb_trans(KEY_RIGHTSHIFT, FALSE);
+      if (sent->neutral_lshift) {
+        kb_trans(KEY_LEFTSHIFT, FALSE);
+        record_key_event();
+      }
+      if (sent->neutral_rshift) {
+        kb_trans(KEY_RIGHTSHIFT, FALSE);
+        record_key_event();
+      }
       return;
     }
   }
@@ -206,6 +239,7 @@ static void handle_X_key(XKeyEvent *event, int upflg)
     if (code != 255) {
       kb_trans(code, upflg);
       update_tracked_shift(code, upflg);
+      record_key_event();
     }
   }
 }
@@ -370,13 +404,9 @@ void process_Xevents(DspInterface dsp)
           break;
         case KeyPress:
           handle_X_key(&report.xkey, FALSE);
-          DoRing();
-          if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
         case KeyRelease:
           handle_X_key(&report.xkey, TRUE);
-          DoRing();
-          if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
         case ButtonPress:
           switch (report.xbutton.button) {
@@ -420,13 +450,9 @@ void process_Xevents(DspInterface dsp)
       switch (report.xany.type) {
         case KeyPress:
           handle_X_key(&report.xkey, FALSE);
-          DoRing();
-          if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
         case KeyRelease:
           handle_X_key(&report.xkey, TRUE);
-          DoRing();
-          if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
         case ConfigureNotify:
           lisp_Xconfigure(dsp, report.xconfigure.x, report.xconfigure.y, (unsigned)report.xconfigure.width,
