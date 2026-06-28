@@ -86,12 +86,20 @@ enum UJTYPE {
   UJSOSTREAM = -4 /* connection from a UJSOCKET */
 };
 
+enum term_filter_state {
+  TERM_FILTER_NORMAL = 0,
+  TERM_FILTER_ESC,
+  TERM_FILTER_OSC,
+  TERM_FILTER_OSC_ESC
+};
+
 /* These are indexed by WRITE socket# */
 struct unixjob {
   char *pathname; /* used by Lisp direct socket access subr */
   int PID;        /* process ID associated with this slot */
   int status;     /* status returned by subprocess (not shell) */
   enum UJTYPE type;
+  enum term_filter_state filter_state;
 };
 
 struct unixjob *UJ; /* allocated at run time */
@@ -102,6 +110,53 @@ long StartTime; /* Time, for creating pipe filenames */
 
 char shcom[2048]; /* Here because I'm suspicious of */
                   /* large allocations on the stack */
+
+static int filter_terminal_output(struct unixjob *job, unsigned char *buf, int len) {
+  int out = 0;
+
+  for (int i = 0; i < len; i++) {
+    unsigned char ch = buf[i];
+
+    switch (job->filter_state) {
+      case TERM_FILTER_NORMAL:
+        if (ch == 0x1b)
+          job->filter_state = TERM_FILTER_ESC;
+        else
+          buf[out++] = ch;
+        break;
+
+      case TERM_FILTER_ESC:
+        if (ch == ']') {
+          job->filter_state = TERM_FILTER_OSC;
+        } else {
+          buf[out++] = 0x1b;
+          if (ch == 0x1b)
+            job->filter_state = TERM_FILTER_ESC;
+          else {
+            buf[out++] = ch;
+            job->filter_state = TERM_FILTER_NORMAL;
+          }
+        }
+        break;
+
+      case TERM_FILTER_OSC:
+        if (ch == 0x07)
+          job->filter_state = TERM_FILTER_NORMAL;
+        else if (ch == 0x1b)
+          job->filter_state = TERM_FILTER_OSC_ESC;
+        break;
+
+      case TERM_FILTER_OSC_ESC:
+        if (ch == '\\' || ch == 0x07)
+          job->filter_state = TERM_FILTER_NORMAL;
+        else if (ch != 0x1b)
+          job->filter_state = TERM_FILTER_OSC;
+        break;
+    }
+  }
+
+  return out;
+}
 
 /************************************************************************/
 /*									*/
@@ -284,6 +339,7 @@ int FindUnixPipes(void) {
   cleareduj.pathname = NULL;
   cleareduj.PID = 0;
   cleareduj.type = UJUNUSED;
+  cleareduj.filter_state = TERM_FILTER_NORMAL;
   for (int i = 0; i < NPROCS; i++) UJ[i] = cleareduj;
 
   DBPRINT(("NPROCS is %d; leaving FindUnixPipes\n", NPROCS));
@@ -608,6 +664,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         UJ[Master].PID = (d[1] << 8) | d[2] | (d[4] << 16) | (d[5] << 24);
         printf("Shell job %d, PID = %d\n", Master, UJ[Master].PID);
         UJ[Master].status = -1;
+        UJ[Master].filter_state = TERM_FILTER_NORMAL;
         DBPRINT(("Forked pty in slot %d.\n", Master));
         return (GetSmallp(Master));
       } else {
@@ -706,6 +763,8 @@ LispPTR Unix_handlecomm(LispPTR *args) {
           case UJSHELL:
           case UJPROCESS:
           case UJSOSTREAM: dest = read(slot, bufp, 512);
+            if (dest > 0 && UJ[slot].type == UJSHELL)
+              dest = filter_terminal_output(&UJ[slot], (unsigned char *)bufp, dest);
 #ifdef BYTESWAP
             word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
