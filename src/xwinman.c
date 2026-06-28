@@ -61,6 +61,17 @@ static inline unsigned ubound(unsigned lower, unsigned value, unsigned upper)
     return (value);
 }
 
+static void focus_Xkeyboard(DspInterface dsp)
+{
+  XWindowAttributes attrs;
+
+  if (dsp->DisplayWindow &&
+      XGetWindowAttributes(dsp->display_id, dsp->DisplayWindow, &attrs) &&
+      attrs.map_state == IsViewable) {
+    XSetInputFocus(dsp->display_id, dsp->DisplayWindow, RevertToParent, CurrentTime);
+  }
+}
+
 void Set_BitGravity(XButtonEvent *event, DspInterface dsp, Window window, int grav)
 {
   Window OldWindow = 0;
@@ -145,6 +156,7 @@ void enable_Xkeyboard(DspInterface dsp)
 {
   XLOCK;
   XSelectInput(dsp->display_id, dsp->DisplayWindow, dsp->EnableEventMask);
+  focus_Xkeyboard(dsp);
   XFlush(dsp->display_id);
   XUNLOCK(dsp);
 }
@@ -260,6 +272,8 @@ void process_Xevents(DspInterface dsp)
           lisp_Xconfigure(dsp, report.xconfigure.x, report.xconfigure.y, (unsigned)report.xconfigure.width,
                           (unsigned)report.xconfigure.height);
           break;
+        case ButtonPress:
+        case FocusIn:
         case EnterNotify: enable_Xkeyboard(currentdsp); break;
         case LeaveNotify: break;
         case MapNotify:

@@ -138,8 +138,8 @@ void Create_LispWindow(DspInterface dsp)
 
   dsp->DisableEventMask = NoEventMask;
   dsp->EnableEventMask = ButtonPressMask | ButtonReleaseMask | EnterWindowMask | LeaveWindowMask |
-                         StructureNotifyMask | PointerMotionMask | ExposureMask | KeyPressMask |
-                         KeyReleaseMask;
+                         StructureNotifyMask | FocusChangeMask | PointerMotionMask | ExposureMask |
+                         KeyPressMask | KeyReleaseMask;
 
   /* Have to make the GC before we make the icon. */
   gcv.function = GXcopy;
