@@ -13,10 +13,13 @@
 
 #include <X11/X.h>         // for Button1, Cursor, ButtonPress, Button2, But...
 #include <X11/Xlib.h>      // for XEvent, XMoveResizeWindow, XAnyEvent, XBut...
+#include <X11/Xutil.h>     // for XLookupString
 #include <stdio.h>         // for printf
+#include <string.h>        // for memset
 #include <sys/types.h>     // for u_char
 #include "devif.h"         // for (anonymous), MRegion, DefineCursor, OUTER_...
 #include "keyeventdefs.h"  // for kb_trans
+#include "keysym.h"        // for KEY_* Lisp key codes
 #include "lispemul.h"      // for PUTBASEBIT68K, FALSE, TRUE, DLword, state
 #include "lspglob.h"       // for MiscStats
 #include "xdefs.h"         // for XLOCK, XUNLOCK
@@ -49,6 +52,163 @@ extern u_char *SUNLispKeyMap;
 #define MOUSE_LEFT 13
 #define MOUSE_RIGHT 14
 #define MOUSE_MIDDLE 15
+
+typedef struct {
+  u_char code;
+  unsigned char handled;
+  unsigned char synth_shift;
+  unsigned char neutral_lshift;
+  unsigned char neutral_rshift;
+} XSentKey;
+
+static XSentKey x_sent_keys[256];
+static int x_lshift_down = FALSE;
+static int x_rshift_down = FALSE;
+
+static int ascii_to_lisp_key(unsigned char c, u_char *code, int *needs_shift)
+{
+  *needs_shift = FALSE;
+
+  if (c >= 'a' && c <= 'z') {
+    static const u_char keys[] = {
+        KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I,
+        KEY_J, KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P, KEY_Q, KEY_R,
+        KEY_S, KEY_T, KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z};
+    *code = keys[c - 'a'];
+    return TRUE;
+  }
+
+  if (c >= 'A' && c <= 'Z') {
+    if (!ascii_to_lisp_key((unsigned char)(c - 'A' + 'a'), code, needs_shift)) return FALSE;
+    *needs_shift = TRUE;
+    return TRUE;
+  }
+
+  switch (c) {
+    case '0': *code = KEY_0; return TRUE;
+    case '1': *code = KEY_1; return TRUE;
+    case '2': *code = KEY_2; return TRUE;
+    case '3': *code = KEY_3; return TRUE;
+    case '4': *code = KEY_4; return TRUE;
+    case '5': *code = KEY_5; return TRUE;
+    case '6': *code = KEY_6; return TRUE;
+    case '7': *code = KEY_7; return TRUE;
+    case '8': *code = KEY_8; return TRUE;
+    case '9': *code = KEY_9; return TRUE;
+    case ' ': *code = KEY_SPACE; return TRUE;
+    case '\t': *code = KEY_TAB; return TRUE;
+    case '\r': *code = KEY_RETURN; return TRUE;
+    case '\n': *code = KEY_RETURN; return TRUE;
+    case '-': *code = KEY_MINUS; return TRUE;
+    case '_': *code = KEY_MINUS; *needs_shift = TRUE; return TRUE;
+    case '=': *code = KEY_EQUAL; return TRUE;
+    case '+': *code = KEY_EQUAL; *needs_shift = TRUE; return TRUE;
+    case '[': *code = KEY_OPENBRACK; return TRUE;
+    case '{': *code = KEY_OPENBRACK; *needs_shift = TRUE; return TRUE;
+    case ']': *code = KEY_CLOSEBRACK; return TRUE;
+    case '}': *code = KEY_CLOSEBRACK; *needs_shift = TRUE; return TRUE;
+    case ';': *code = KEY_SEMICOLON; return TRUE;
+    case ':': *code = KEY_SEMICOLON; *needs_shift = TRUE; return TRUE;
+    case '\'': *code = KEY_QUOTE; return TRUE;
+    case '"': *code = KEY_QUOTE; *needs_shift = TRUE; return TRUE;
+    case '`': *code = KEY_BACKQUOTE; return TRUE;
+    case '~': *code = KEY_BACKQUOTE; *needs_shift = TRUE; return TRUE;
+    case '\\': *code = 105; return TRUE;
+    case '|': *code = 105; *needs_shift = TRUE; return TRUE;
+    case ',': *code = KEY_COMMA; return TRUE;
+    case '<': *code = KEY_COMMA; *needs_shift = TRUE; return TRUE;
+    case '.': *code = KEY_PERIOD; return TRUE;
+    case '>': *code = KEY_PERIOD; *needs_shift = TRUE; return TRUE;
+    case '/': *code = KEY_SLASH; return TRUE;
+    case '?': *code = KEY_SLASH; *needs_shift = TRUE; return TRUE;
+    case '!': *code = KEY_1; *needs_shift = TRUE; return TRUE;
+    case '@': *code = KEY_2; *needs_shift = TRUE; return TRUE;
+    case '#': *code = KEY_3; *needs_shift = TRUE; return TRUE;
+    case '$': *code = KEY_4; *needs_shift = TRUE; return TRUE;
+    case '%': *code = KEY_5; *needs_shift = TRUE; return TRUE;
+    case '^': *code = KEY_6; *needs_shift = TRUE; return TRUE;
+    case '&': *code = KEY_7; *needs_shift = TRUE; return TRUE;
+    case '*': *code = KEY_8; *needs_shift = TRUE; return TRUE;
+    case '(': *code = KEY_9; *needs_shift = TRUE; return TRUE;
+    case ')': *code = KEY_0; *needs_shift = TRUE; return TRUE;
+    default: return FALSE;
+  }
+}
+
+static u_char xkey_to_lisp_key(const XKeyEvent *event)
+{
+  int index = (int)event->keycode - KEYCODE_OFFSET;
+
+  if (index < 0 || index >= 256) return 255;
+  return SUNLispKeyMap[index];
+}
+
+static void update_tracked_shift(u_char code, int upflg)
+{
+  if (code == KEY_LEFTSHIFT) x_lshift_down = !upflg;
+  if (code == KEY_RIGHTSHIFT) x_rshift_down = !upflg;
+}
+
+static void handle_X_key(XKeyEvent *event, int upflg)
+{
+  int index = (int)event->keycode;
+  XSentKey *sent = (index >= 0 && index < 256) ? &x_sent_keys[index] : NULL;
+
+  if (upflg) {
+    if (sent && sent->handled) {
+      if (sent->neutral_lshift && x_lshift_down) kb_trans(KEY_LEFTSHIFT, TRUE);
+      if (sent->neutral_rshift && x_rshift_down) kb_trans(KEY_RIGHTSHIFT, TRUE);
+      kb_trans(sent->code, TRUE);
+      if (sent->synth_shift) kb_trans(KEY_RIGHTSHIFT, TRUE);
+      if (sent->neutral_lshift && x_lshift_down) kb_trans(KEY_LEFTSHIFT, FALSE);
+      if (sent->neutral_rshift && x_rshift_down) kb_trans(KEY_RIGHTSHIFT, FALSE);
+      memset(sent, 0, sizeof(*sent));
+      return;
+    }
+  } else if (sent && !(event->state & ControlMask)) {
+    char text[8];
+    KeySym keysym = NoSymbol;
+    u_char code = 255;
+    int needs_shift = FALSE;
+    int len = XLookupString(event, text, (int)sizeof(text), &keysym, NULL);
+
+    if (len == 1 && ascii_to_lisp_key((unsigned char)text[0], &code, &needs_shift)) {
+      memset(sent, 0, sizeof(*sent));
+      sent->handled = TRUE;
+      sent->code = code;
+
+      if (needs_shift) {
+        if (!x_lshift_down && !x_rshift_down) {
+          kb_trans(KEY_RIGHTSHIFT, FALSE);
+          sent->synth_shift = TRUE;
+        }
+      } else {
+        if (x_lshift_down) {
+          kb_trans(KEY_LEFTSHIFT, TRUE);
+          sent->neutral_lshift = TRUE;
+        }
+        if (x_rshift_down) {
+          kb_trans(KEY_RIGHTSHIFT, TRUE);
+          sent->neutral_rshift = TRUE;
+        }
+      }
+
+      kb_trans(code, FALSE);
+
+      if (sent->neutral_lshift) kb_trans(KEY_LEFTSHIFT, FALSE);
+      if (sent->neutral_rshift) kb_trans(KEY_RIGHTSHIFT, FALSE);
+      return;
+    }
+  }
+
+  {
+    u_char code = xkey_to_lisp_key(event);
+    if (code != 255) {
+      kb_trans(code, upflg);
+      update_tracked_shift(code, upflg);
+    }
+  }
+}
 
 /* ubound: return (unsigned) value if it is between lower and upper otherwise lower or upper */
 static inline unsigned ubound(unsigned lower, unsigned value, unsigned upper)
@@ -209,12 +369,12 @@ void process_Xevents(DspInterface dsp)
               (short)((report.xmotion.y + dsp->Visible.y) & 0xFFFF) - Current_Hot_Y;
           break;
         case KeyPress:
-          kb_trans(SUNLispKeyMap[(report.xkey.keycode) - KEYCODE_OFFSET], FALSE);
+          handle_X_key(&report.xkey, FALSE);
           DoRing();
           if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
         case KeyRelease:
-          kb_trans(SUNLispKeyMap[(report.xkey.keycode) - KEYCODE_OFFSET], TRUE);
+          handle_X_key(&report.xkey, TRUE);
           DoRing();
           if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
@@ -259,12 +419,12 @@ void process_Xevents(DspInterface dsp)
     else if (report.xany.window == dsp->LispWindow)
       switch (report.xany.type) {
         case KeyPress:
-          kb_trans(SUNLispKeyMap[(report.xkey.keycode) - KEYCODE_OFFSET], FALSE);
+          handle_X_key(&report.xkey, FALSE);
           DoRing();
           if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
         case KeyRelease:
-          kb_trans(SUNLispKeyMap[(report.xkey.keycode) - KEYCODE_OFFSET], TRUE);
+          handle_X_key(&report.xkey, TRUE);
           DoRing();
           if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
           break;
