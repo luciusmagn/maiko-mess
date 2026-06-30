@@ -466,7 +466,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "pid=%ld\n"
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
-                  "unix-handlecomm-max=46\n"
+                  "unix-handlecomm-max=47\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -662,6 +662,26 @@ static int unix_mag_gopher_viewport_status(unsigned char *out, int cap) {
   return used;
 }
 
+static int unix_mag_gopher_label(int index, unsigned char *out, int cap) {
+  int k = index;
+
+  if (out == NULL || cap <= 0 || index < 0) return -1;
+
+  if (k < 676) {
+    if (cap < 2) return -1;
+    out[0] = (unsigned char)('a' + (k / 26));
+    out[1] = (unsigned char)('a' + (k % 26));
+    return 2;
+  }
+
+  k -= 676;
+  if (k >= 17576 || cap < 3) return -1;
+  out[0] = (unsigned char)('a' + (k / 676));
+  out[1] = (unsigned char)('a' + ((k % 676) / 26));
+  out[2] = (unsigned char)('a' + (k % 26));
+  return 3;
+}
+
 static const char *unixjob_type_name(enum UJTYPE type) {
   switch (type) {
     case UJUNUSED: return "unused";
@@ -779,7 +799,7 @@ static int unix_mag_jobs_status(unsigned char *out, int cap) {
   int omitted = 0;
 
   if (out == NULL || cap <= 0) return -1;
-  if (unix_mag_appendf(out, cap, &used, "mag-jobs\nunix-handlecomm-max=46\n") < 0)
+  if (unix_mag_appendf(out, cap, &used, "mag-jobs\nunix-handlecomm-max=47\n") < 0)
     return -1;
 
   if (UJ == NULL) {
@@ -2793,6 +2813,8 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*           => byte count or NIL                                          */
 /*     46 Mag bounded native job list, Arg1 = buffer                       */
 /*           => byte count or NIL                                          */
+/*     47 Mag Gopher item label, Arg1 = zero-based index, Arg2 = buffer    */
+/*           => byte count or NIL                                          */
 /*                                                                      */
 /************************************************************************/
 
@@ -3133,7 +3155,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(46));
+      return (GetSmallp(47));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -3919,6 +3941,20 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 
       bufp = NativeAligned2FromLAddr(args[1]);
       n = unix_mag_jobs_status((unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 47: /* Mag Gopher item label */
+    {
+      DLword *bufp;
+      int index, n;
+
+      N_GETNUMBER(args[1], index, bad);
+      bufp = NativeAligned2FromLAddr(args[2]);
+      n = unix_mag_gopher_label(index, (unsigned char *)bufp, 512);
 #ifdef BYTESWAP
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
