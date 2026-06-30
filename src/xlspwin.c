@@ -102,7 +102,7 @@ void Create_LispWindow(DspInterface dsp)
   Row3 = dsp->Visible.height + (OUTER_SB_WIDTH(dsp) / 2);
 
   screen = ScreenOfDisplay(dsp->display_id, DefaultScreen(dsp->display_id));
-  /* set up default display as black on white */
+  /* Medley's 1-bit display should be black on Acme off-white, not X pure white. */
   foregroundPixel = BlackPixelOfScreen(screen); 
   backgroundPixel = WhitePixelOfScreen(screen);
   /* parse and record non-default color specs for foreground and background */
@@ -114,12 +114,15 @@ void Create_LispWindow(DspInterface dsp)
     }
     foregroundPixel = foregroundColor_xcsd.pixel;
   }
-  if (backgroundColorName[0]) {
-    status = XAllocNamedColor(dsp->display_id, Colors, backgroundColorName, &backgroundColor_xcsd, &backgroundColor_xcsd);
-    if (status == 0) {
+  status = XAllocNamedColor(dsp->display_id, Colors,
+                            backgroundColorName[0] ? backgroundColorName : "rgb:ff/ff/e8",
+                            &backgroundColor_xcsd, &backgroundColor_xcsd);
+  if (status == 0) {
+    if (backgroundColorName[0]) {
       fprintf(stderr, "Color allocation failed for background color: %s\n", backgroundColorName);
       exit(1);
     }
+  } else {
     backgroundPixel = backgroundColor_xcsd.pixel;
   }
   dsp->LispWindow = XCreateSimpleWindow(
