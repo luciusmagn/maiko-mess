@@ -171,6 +171,23 @@ static void unixjob_init_slot(struct unixjob *job, enum UJTYPE type) {
 #endif
 }
 
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+static void ghostty_job_reset_stats(struct unixjob *job) {
+  if (job == NULL) return;
+  job->ghostty_vt_write_calls = 0;
+  job->ghostty_vt_write_bytes = 0;
+  job->ghostty_render_update_calls = 0;
+  job->ghostty_changed_row_scans = 0;
+  job->ghostty_changed_rows_total = 0;
+  job->ghostty_vt_write_us = 0;
+  job->ghostty_render_update_us = 0;
+  job->ghostty_changed_row_scan_us = 0;
+  job->ghostty_last_update_us = 0;
+  job->ghostty_last_scan_us = 0;
+  job->ghostty_last_changed_rows = 0;
+}
+#endif
+
 static int filter_terminal_output(struct unixjob *job, unsigned char *buf, int len) {
   int out = 0;
 
@@ -425,7 +442,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "pid=%ld\n"
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
-                  "unix-handlecomm-max=41\n"
+                  "unix-handlecomm-max=42\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -2415,6 +2432,8 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*     40 Mag per-job terminal status, Arg1 = Job #, Arg2 = buffer       */
 /*           => byte count or NIL                                        */
 /*     41 Mag runtime config status, Arg1 = buffer => byte count or NIL  */
+/*     42 Mag reset Ghostty counters, Arg1 = Job # or -1 for all         */
+/*           => reset job count or NIL                                    */
 /*                                                                      */
 /************************************************************************/
 
@@ -2755,7 +2774,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(41));
+      return (GetSmallp(42));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -3459,6 +3478,33 @@ LispPTR Unix_handlecomm(LispPTR *args) {
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
       return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 42: /* Mag reset Ghostty counters */
+    {
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+      int reset_count = 0;
+
+      N_GETNUMBER(args[1], slot, bad);
+      if (slot < 0) {
+        if (UJ == NULL) return (NIL);
+        for (int i = 0; i < NPROCS; i++) {
+          if (UJ[i].type == UJSHELL && UJ[i].ghostty_terminal != NULL) {
+            ghostty_job_reset_stats(&UJ[i]);
+            reset_count++;
+          }
+        }
+        return GetSmallp(reset_count);
+      }
+
+      if (!valid_slot(slot) || UJ[slot].type != UJSHELL ||
+          UJ[slot].ghostty_terminal == NULL)
+        return (NIL);
+      ghostty_job_reset_stats(&UJ[slot]);
+      return GetSmallp(1);
+#else
+      return (NIL);
+#endif
     }
 
     default: return (NIL);
