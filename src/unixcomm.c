@@ -289,7 +289,7 @@ static int unix_battery_status(unsigned char *out, int cap) {
   char capacity_buf[32] = "";
   FILE *file;
   int capacity = -1;
-  char marker = '?';
+  const char *state = "unk";
 
   if (out == NULL || cap <= 0) return -1;
   dir = opendir("/sys/class/power_supply");
@@ -319,15 +319,15 @@ static int unix_battery_status(unsigned char *out, int cap) {
 
   if (capacity < 0) return -1;
   if (strncmp(status, "Charging", 8) == 0)
-    marker = '+';
+    state = "chg";
   else if (strncmp(status, "Discharging", 11) == 0)
-    marker = '-';
+    state = "dis";
   else if (strncmp(status, "Full", 4) == 0)
-    marker = '=';
+    state = "full";
   else if (strncmp(status, "Not charging", 12) == 0)
-    marker = '~';
+    state = "hold";
 
-  return snprintf((char *)out, (size_t)cap, "B %d%%%c", capacity, marker);
+  return snprintf((char *)out, (size_t)cap, "B %d%% %s", capacity, state);
 }
 
 static int unix_mag_read_request(unsigned char *out, int cap) {
