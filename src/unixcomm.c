@@ -1132,6 +1132,78 @@ static uint16_t ghostty_display_bmp_codepoint(uint32_t codepoint) {
   return (uint16_t)ghostty_display_byte(codepoint);
 }
 
+#define GHOSTTY_BOX_LEFT 0x10
+#define GHOSTTY_BOX_RIGHT 0x20
+#define GHOSTTY_BOX_UP 0x40
+#define GHOSTTY_BOX_DOWN 0x80
+
+static int ghostty_codepoint_in_u16_list(uint32_t codepoint, const uint16_t *values,
+                                         size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    if (codepoint == values[i]) return 1;
+  }
+  return 0;
+}
+
+static int ghostty_codepoint_in_range(uint32_t codepoint, uint32_t first, uint32_t last) {
+  return codepoint >= first && codepoint <= last;
+}
+
+static unsigned char ghostty_box_flags(uint32_t codepoint) {
+  static const uint16_t left_list[] = {
+      9472, 9473, 9476, 9477, 9480, 9481, 9548, 9549, 9552, 9588, 9592, 9596, 9598, 9582, 9583};
+  static const uint16_t right_list[] = {
+      9472, 9473, 9476, 9477, 9480, 9481, 9548, 9549, 9552, 9590, 9594, 9596, 9598, 9581, 9584};
+  static const uint16_t up_list[] = {
+      9474, 9475, 9478, 9479, 9482, 9483, 9553, 9589, 9593, 9597, 9599, 9583, 9584};
+  static const uint16_t down_list[] = {
+      9474, 9475, 9478, 9479, 9482, 9483, 9553, 9591, 9595, 9597, 9599, 9581, 9582};
+  unsigned char flags = 0;
+
+  if (!ghostty_codepoint_in_range(codepoint, 0x2500, 0x257f)) return 0;
+
+  if (ghostty_codepoint_in_u16_list(codepoint, left_list,
+                                    sizeof(left_list) / sizeof(left_list[0])) ||
+      ghostty_codepoint_in_range(codepoint, 9488, 9491) ||
+      ghostty_codepoint_in_range(codepoint, 9496, 9499) ||
+      ghostty_codepoint_in_range(codepoint, 9508, 9515) ||
+      ghostty_codepoint_in_range(codepoint, 9516, 9547) ||
+      ghostty_codepoint_in_range(codepoint, 9557, 9565) ||
+      ghostty_codepoint_in_range(codepoint, 9569, 9580))
+    flags |= GHOSTTY_BOX_LEFT;
+
+  if (ghostty_codepoint_in_u16_list(codepoint, right_list,
+                                    sizeof(right_list) / sizeof(right_list[0])) ||
+      ghostty_codepoint_in_range(codepoint, 9484, 9487) ||
+      ghostty_codepoint_in_range(codepoint, 9492, 9495) ||
+      ghostty_codepoint_in_range(codepoint, 9500, 9507) ||
+      ghostty_codepoint_in_range(codepoint, 9516, 9547) ||
+      ghostty_codepoint_in_range(codepoint, 9554, 9562) ||
+      ghostty_codepoint_in_range(codepoint, 9566, 9580))
+    flags |= GHOSTTY_BOX_RIGHT;
+
+  if (ghostty_codepoint_in_u16_list(codepoint, up_list,
+                                    sizeof(up_list) / sizeof(up_list[0])) ||
+      ghostty_codepoint_in_range(codepoint, 9492, 9499) ||
+      ghostty_codepoint_in_range(codepoint, 9500, 9515) ||
+      ghostty_codepoint_in_range(codepoint, 9524, 9547) ||
+      ghostty_codepoint_in_range(codepoint, 9560, 9571) ||
+      ghostty_codepoint_in_range(codepoint, 9575, 9580))
+    flags |= GHOSTTY_BOX_UP;
+
+  if (ghostty_codepoint_in_u16_list(codepoint, down_list,
+                                    sizeof(down_list) / sizeof(down_list[0])) ||
+      ghostty_codepoint_in_range(codepoint, 9484, 9491) ||
+      ghostty_codepoint_in_range(codepoint, 9500, 9523) ||
+      ghostty_codepoint_in_range(codepoint, 9532, 9547) ||
+      ghostty_codepoint_in_range(codepoint, 9554, 9574) ||
+      ghostty_codepoint_in_range(codepoint, 9578, 9580))
+    flags |= GHOSTTY_BOX_DOWN;
+
+  return flags == 0 ? (GHOSTTY_BOX_LEFT | GHOSTTY_BOX_RIGHT | GHOSTTY_BOX_UP | GHOSTTY_BOX_DOWN)
+                    : flags;
+}
+
 static unsigned char ghostty_style_flags(const GhosttyStyle *style) {
   unsigned char flags = 0;
 
@@ -1142,6 +1214,22 @@ static unsigned char ghostty_style_flags(const GhosttyStyle *style) {
   if (style->italic) flags |= 8;
   return flags;
 }
+
+static unsigned char ghostty_cell_flags(GhosttyRenderStateRowCells cells, uint32_t codepoint,
+                                        int *invisible) {
+  GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+  unsigned char flags = ghostty_box_flags(codepoint);
+
+  if (invisible != NULL) *invisible = 0;
+  if (ghostty_render_state_row_cells_get(cells,
+                                         GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
+                                         &style) == GHOSTTY_SUCCESS) {
+    flags |= ghostty_style_flags(&style);
+    if (style.invisible && invisible != NULL) *invisible = 1;
+  }
+  return flags;
+}
+
 
 static unsigned char ghostty_nearest_ansi_color(GhosttyColorRgb color) {
   static const GhosttyColorRgb palette[16] = {
@@ -1219,18 +1307,14 @@ static uint64_t ghostty_rendered_row_hash(GhosttyRenderStateRowCells cells) {
   uint64_t cell_count = 0;
 
   while (ghostty_render_state_row_cells_next(cells)) {
-    GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
-    uint16_t ch = ghostty_display_bmp_codepoint(ghostty_cell_codepoint(cells));
-    unsigned char flags = 0;
+    uint32_t codepoint = ghostty_cell_codepoint(cells);
+    uint16_t ch = ghostty_display_bmp_codepoint(codepoint);
+    int invisible = 0;
+    unsigned char flags = ghostty_cell_flags(cells, codepoint, &invisible);
     unsigned char fg = ghostty_cell_fg_index(cells);
     unsigned char bg = ghostty_cell_bg_index(cells);
 
-    if (ghostty_render_state_row_cells_get(cells,
-                                           GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-                                           &style) == GHOSTTY_SUCCESS) {
-      flags = ghostty_style_flags(&style);
-      if (style.invisible) ch = ' ';
-    }
+    if (invisible) ch = ' ';
 
     hash = ghostty_hash_mix(hash, ch);
     hash = ghostty_hash_mix(hash, flags);
@@ -1428,9 +1512,10 @@ static int ghostty_job_copy_row_styled(struct unixjob *job, int row, unsigned ch
       while ((n + 1) < cap && ghostty_render_state_row_cells_next(cells)) {
         uint32_t grapheme_len = 0;
         uint32_t codepoints[8] = {0};
-        GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+        uint32_t codepoint = ' ';
         unsigned char ch = ' ';
-        unsigned char flags = 0;
+        int invisible = 0;
+        unsigned char flags;
 
         ghostty_render_state_row_cells_get(cells,
                                            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
@@ -1439,14 +1524,11 @@ static int ghostty_job_copy_row_styled(struct unixjob *job, int row, unsigned ch
           ghostty_render_state_row_cells_get(cells,
                                              GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
                                              codepoints);
-          ch = ghostty_display_byte(codepoints[0]);
+          codepoint = codepoints[0];
+          ch = ghostty_display_byte(codepoint);
         }
-        if (ghostty_render_state_row_cells_get(cells,
-                                               GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-                                               &style) == GHOSTTY_SUCCESS) {
-          flags = ghostty_style_flags(&style);
-          if (style.invisible) ch = ' ';
-        }
+        flags = ghostty_cell_flags(cells, codepoint, &invisible);
+        if (invisible) ch = ' ';
 
         out[n++] = ch;
         out[n++] = flags;
@@ -1500,11 +1582,12 @@ static int ghostty_job_copy_row_colored(struct unixjob *job, int row, unsigned c
       while ((n + 3) < cap && ghostty_render_state_row_cells_next(cells)) {
         uint32_t grapheme_len = 0;
         uint32_t codepoints[8] = {0};
-        GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+        uint32_t codepoint = ' ';
         unsigned char ch = ' ';
-	        unsigned char flags = 0;
-	        unsigned char fg = ghostty_cell_fg_index(cells);
-	        unsigned char bg = ghostty_cell_bg_index(cells);
+        int invisible = 0;
+        unsigned char flags;
+        unsigned char fg = ghostty_cell_fg_index(cells);
+        unsigned char bg = ghostty_cell_bg_index(cells);
 
         ghostty_render_state_row_cells_get(cells,
                                            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
@@ -1513,14 +1596,11 @@ static int ghostty_job_copy_row_colored(struct unixjob *job, int row, unsigned c
           ghostty_render_state_row_cells_get(cells,
                                              GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
                                              codepoints);
-          ch = ghostty_display_byte(codepoints[0]);
+          codepoint = codepoints[0];
+          ch = ghostty_display_byte(codepoint);
         }
-        if (ghostty_render_state_row_cells_get(cells,
-                                               GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-                                               &style) == GHOSTTY_SUCCESS) {
-          flags = ghostty_style_flags(&style);
-          if (style.invisible) ch = ' ';
-        }
+        flags = ghostty_cell_flags(cells, codepoint, &invisible);
+        if (invisible) ch = ' ';
 
         out[n++] = ch;
         out[n++] = flags;
@@ -1580,18 +1660,14 @@ static int ghostty_job_copy_row_bmp_colored(struct unixjob *job, int row, unsign
       }
 
       while ((n + 3) < cap && ghostty_render_state_row_cells_next(cells)) {
-        GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
-        uint16_t ch = ghostty_display_bmp_codepoint(ghostty_cell_codepoint(cells));
-	        unsigned char flags = 0;
-	        unsigned char fg = ghostty_cell_fg_index(cells);
-	        unsigned char bg = ghostty_cell_bg_index(cells);
+        uint32_t codepoint = ghostty_cell_codepoint(cells);
+        uint16_t ch = ghostty_display_bmp_codepoint(codepoint);
+        int invisible = 0;
+        unsigned char flags = ghostty_cell_flags(cells, codepoint, &invisible);
+        unsigned char fg = ghostty_cell_fg_index(cells);
+        unsigned char bg = ghostty_cell_bg_index(cells);
 
-        if (ghostty_render_state_row_cells_get(cells,
-                                               GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-                                               &style) == GHOSTTY_SUCCESS) {
-          flags = ghostty_style_flags(&style);
-          if (style.invisible) ch = ' ';
-        }
+        if (invisible) ch = ' ';
 
         if (ch < 255) {
           if ((n + 3) >= cap) break;
@@ -1735,24 +1811,22 @@ static int ghostty_job_copy_row_bmp_colored_segment(struct unixjob *job, int row
       }
 
       while ((n + 3) < cap && ghostty_render_state_row_cells_next(cells)) {
-        GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
         uint16_t ch;
         unsigned char flags = 0;
+        uint32_t codepoint;
+        int invisible = 0;
         unsigned char fg;
         unsigned char bg;
 
         if (cell_index++ < start_cell) continue;
 
-	        ch = ghostty_display_bmp_codepoint(ghostty_cell_codepoint(cells));
-	        fg = ghostty_cell_fg_index(cells);
-	        bg = ghostty_cell_bg_index(cells);
+        codepoint = ghostty_cell_codepoint(cells);
+        ch = ghostty_display_bmp_codepoint(codepoint);
+        fg = ghostty_cell_fg_index(cells);
+        bg = ghostty_cell_bg_index(cells);
+        flags = ghostty_cell_flags(cells, codepoint, &invisible);
 
-        if (ghostty_render_state_row_cells_get(cells,
-                                               GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-                                               &style) == GHOSTTY_SUCCESS) {
-          flags = ghostty_style_flags(&style);
-          if (style.invisible) ch = ' ';
-        }
+        if (invisible) ch = ' ';
 
         if (ch < 255) {
           if ((n + 3) >= cap) break;
@@ -1821,26 +1895,24 @@ static int ghostty_job_copy_row_bmp_rgb_segment(struct unixjob *job, int row, in
       }
 
       while (ghostty_render_state_row_cells_next(cells)) {
-        GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
         GhosttyColorRgb fg;
         GhosttyColorRgb bg;
         uint16_t ch;
+        uint32_t codepoint;
+        int invisible = 0;
         unsigned char flags = 0;
 
         if (cell_index++ < start_cell) continue;
 
-        ch = ghostty_display_bmp_codepoint(ghostty_cell_codepoint(cells));
+        codepoint = ghostty_cell_codepoint(cells);
+        ch = ghostty_display_bmp_codepoint(codepoint);
         fg = ghostty_cell_color_rgb(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
                                     (GhosttyColorRgb){229, 229, 229});
         bg = ghostty_cell_color_rgb(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
                                     (GhosttyColorRgb){0, 0, 0});
+        flags = ghostty_cell_flags(cells, codepoint, &invisible);
 
-        if (ghostty_render_state_row_cells_get(cells,
-                                               GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-                                               &style) == GHOSTTY_SUCCESS) {
-          flags = ghostty_style_flags(&style);
-          if (style.invisible) ch = ' ';
-        }
+        if (invisible) ch = ' ';
 
         if (ch < 255) {
           if ((n + 7) >= cap) break;
