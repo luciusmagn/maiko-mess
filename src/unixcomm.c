@@ -354,6 +354,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
   int processes = 0;
   int sockets = 0;
   int streams = 0;
+  int unix_helper_alive = 0;
   int ghostty_shells = 0;
   int ghostty_render_valid = 0;
   uint64_t ghostty_vt_write_calls = 0;
@@ -371,6 +372,9 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
   char battery[64] = "battery unavailable";
 
   if (out == NULL || cap <= 0) return -1;
+
+  if (UnixPID > 0 && (kill(UnixPID, 0) == 0 || errno == EPERM))
+    unix_helper_alive = 1;
 
   if (UJ != NULL) {
     for (int i = 0; i < NPROCS; i++) {
@@ -417,9 +421,11 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
     snprintf(battery, sizeof(battery), "battery unavailable");
 
 	  return snprintf((char *)out, (size_t)cap,
-	                  "mag-debug\n"
-	                  "pid=%ld\n"
-	                  "unix-handlecomm-max=40\n"
+		                  "mag-debug\n"
+		                  "pid=%ld\n"
+		                  "unix-helper=%d alive=%d\n"
+		                  "unix-pipes=%d/%d\n"
+		                  "unix-handlecomm-max=40\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -446,8 +452,9 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
 	                  "gt-last-changed=%d\n"
 	                  "gt-hash-rows=%d\n"
 	                  "%s\n",
-                  (long)getpid(), NPROCS, used, shells, processes, sockets,
-                  streams, ghostty_shells, ghostty_render_valid,
+	                  (long)getpid(), UnixPID, unix_helper_alive,
+	                  UnixPipeIn, UnixPipeOut, NPROCS, used, shells, processes,
+	                  sockets, streams, ghostty_shells, ghostty_render_valid,
                   (unsigned long long)ghostty_vt_write_calls,
                   (unsigned long long)ghostty_vt_write_bytes,
 	                  (unsigned long long)ghostty_render_update_calls,
