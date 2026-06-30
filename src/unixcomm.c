@@ -38,6 +38,7 @@ Unix Interface Communications
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -124,6 +125,11 @@ struct unixjob {
   uint64_t ghostty_render_update_calls;
   uint64_t ghostty_changed_row_scans;
   uint64_t ghostty_changed_rows_total;
+  uint64_t ghostty_vt_write_us;
+  uint64_t ghostty_render_update_us;
+  uint64_t ghostty_changed_row_scan_us;
+  uint64_t ghostty_last_update_us;
+  uint64_t ghostty_last_scan_us;
   int ghostty_last_changed_rows;
 #endif
 };
@@ -156,6 +162,11 @@ static void unixjob_init_slot(struct unixjob *job, enum UJTYPE type) {
   job->ghostty_render_update_calls = 0;
   job->ghostty_changed_row_scans = 0;
   job->ghostty_changed_rows_total = 0;
+  job->ghostty_vt_write_us = 0;
+  job->ghostty_render_update_us = 0;
+  job->ghostty_changed_row_scan_us = 0;
+  job->ghostty_last_update_us = 0;
+  job->ghostty_last_scan_us = 0;
   job->ghostty_last_changed_rows = 0;
 #endif
 }
@@ -322,6 +333,21 @@ static int unix_mag_read_request(unsigned char *out, int cap) {
   return (int)n;
 }
 
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+static uint64_t unix_mag_now_us(void) {
+  struct timeval tv;
+  if (gettimeofday(&tv, NULL) < 0) return 0;
+  return ((uint64_t)tv.tv_sec * 1000000ULL) + (uint64_t)tv.tv_usec;
+}
+
+static uint64_t unix_mag_elapsed_us(uint64_t start) {
+  uint64_t end;
+  if (start == 0) return 0;
+  end = unix_mag_now_us();
+  return (end >= start) ? (end - start) : 0;
+}
+#endif
+
 static int unix_mag_debug_status(unsigned char *out, int cap) {
   int used = 0;
   int shells = 0;
@@ -335,6 +361,11 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
   uint64_t ghostty_render_update_calls = 0;
   uint64_t ghostty_changed_row_scans = 0;
   uint64_t ghostty_changed_rows_total = 0;
+  uint64_t ghostty_vt_write_us = 0;
+  uint64_t ghostty_render_update_us = 0;
+  uint64_t ghostty_changed_row_scan_us = 0;
+  uint64_t ghostty_last_update_us = 0;
+  uint64_t ghostty_last_scan_us = 0;
   int ghostty_hash_rows_total = 0;
   int ghostty_last_changed_rows_total = 0;
   char battery[64] = "battery unavailable";
@@ -356,6 +387,11 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
             ghostty_render_update_calls += UJ[i].ghostty_render_update_calls;
             ghostty_changed_row_scans += UJ[i].ghostty_changed_row_scans;
             ghostty_changed_rows_total += UJ[i].ghostty_changed_rows_total;
+            ghostty_vt_write_us += UJ[i].ghostty_vt_write_us;
+            ghostty_render_update_us += UJ[i].ghostty_render_update_us;
+            ghostty_changed_row_scan_us += UJ[i].ghostty_changed_row_scan_us;
+            ghostty_last_update_us += UJ[i].ghostty_last_update_us;
+            ghostty_last_scan_us += UJ[i].ghostty_last_scan_us;
             ghostty_hash_rows_total += UJ[i].ghostty_hash_rows;
             ghostty_last_changed_rows_total += UJ[i].ghostty_last_changed_rows;
           }
@@ -399,22 +435,32 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "ghostty-render-valid=%d\n"
                   "gt-write-calls=%llu\n"
                   "gt-write-bytes=%llu\n"
-                  "gt-render-updates=%llu\n"
-                  "gt-change-scans=%llu\n"
-                  "gt-changed-rows=%llu\n"
-                  "gt-last-changed=%d\n"
-                  "gt-hash-rows=%d\n"
-                  "%s\n",
+	                  "gt-render-updates=%llu\n"
+	                  "gt-change-scans=%llu\n"
+	                  "gt-changed-rows=%llu\n"
+	                  "gt-write-us=%llu\n"
+	                  "gt-update-us=%llu\n"
+	                  "gt-scan-us=%llu\n"
+	                  "gt-last-update-us=%llu\n"
+	                  "gt-last-scan-us=%llu\n"
+	                  "gt-last-changed=%d\n"
+	                  "gt-hash-rows=%d\n"
+	                  "%s\n",
                   (long)getpid(), NPROCS, used, shells, processes, sockets,
                   streams, ghostty_shells, ghostty_render_valid,
                   (unsigned long long)ghostty_vt_write_calls,
                   (unsigned long long)ghostty_vt_write_bytes,
-                  (unsigned long long)ghostty_render_update_calls,
-                  (unsigned long long)ghostty_changed_row_scans,
-                  (unsigned long long)ghostty_changed_rows_total,
-                  ghostty_last_changed_rows_total,
-                  ghostty_hash_rows_total,
-	                  battery);
+	                  (unsigned long long)ghostty_render_update_calls,
+	                  (unsigned long long)ghostty_changed_row_scans,
+	                  (unsigned long long)ghostty_changed_rows_total,
+	                  (unsigned long long)ghostty_vt_write_us,
+	                  (unsigned long long)ghostty_render_update_us,
+	                  (unsigned long long)ghostty_changed_row_scan_us,
+	                  (unsigned long long)ghostty_last_update_us,
+	                  (unsigned long long)ghostty_last_scan_us,
+	                  ghostty_last_changed_rows_total,
+	                  ghostty_hash_rows_total,
+		                  battery);
 }
 
 static const char *unixjob_type_name(enum UJTYPE type) {
@@ -479,20 +525,30 @@ static int unix_mag_job_status(int slot, unsigned char *out, int cap) {
                   "render-valid=%d\n"
                   "write-calls=%llu\n"
                   "write-bytes=%llu\n"
-                  "render-updates=%llu\n"
-                  "change-scans=%llu\n"
-                  "changed-rows=%llu\n"
-                  "last-changed=%d\n"
-                  "hash-rows=%d\n",
+	                  "render-updates=%llu\n"
+	                  "change-scans=%llu\n"
+	                  "changed-rows=%llu\n"
+	                  "write-us=%llu\n"
+	                  "update-us=%llu\n"
+	                  "scan-us=%llu\n"
+	                  "last-update-us=%llu\n"
+	                  "last-scan-us=%llu\n"
+	                  "last-changed=%d\n"
+	                  "hash-rows=%d\n",
 #else
                   "render-valid=0\n"
                   "write-calls=0\n"
                   "write-bytes=0\n"
-                  "render-updates=0\n"
-                  "change-scans=0\n"
-                  "changed-rows=0\n"
-                  "last-changed=0\n"
-                  "hash-rows=0\n",
+	                  "render-updates=0\n"
+	                  "change-scans=0\n"
+	                  "changed-rows=0\n"
+	                  "write-us=0\n"
+	                  "update-us=0\n"
+	                  "scan-us=0\n"
+	                  "last-update-us=0\n"
+	                  "last-scan-us=0\n"
+	                  "last-changed=0\n"
+	                  "hash-rows=0\n",
 #endif
                   slot, job->type != UJUNUSED, unixjob_type_name(job->type),
                   job->PID, job->status, ghostty, cols, rows, cursor_x,
@@ -501,11 +557,16 @@ static int unix_mag_job_status(int slot, unsigned char *out, int cap) {
                   , job->ghostty_render_valid,
                   (unsigned long long)job->ghostty_vt_write_calls,
                   (unsigned long long)job->ghostty_vt_write_bytes,
-                  (unsigned long long)job->ghostty_render_update_calls,
-                  (unsigned long long)job->ghostty_changed_row_scans,
-                  (unsigned long long)job->ghostty_changed_rows_total,
-                  job->ghostty_last_changed_rows,
-                  job->ghostty_hash_rows
+	                  (unsigned long long)job->ghostty_render_update_calls,
+	                  (unsigned long long)job->ghostty_changed_row_scans,
+	                  (unsigned long long)job->ghostty_changed_rows_total,
+	                  (unsigned long long)job->ghostty_vt_write_us,
+	                  (unsigned long long)job->ghostty_render_update_us,
+	                  (unsigned long long)job->ghostty_changed_row_scan_us,
+	                  (unsigned long long)job->ghostty_last_update_us,
+	                  (unsigned long long)job->ghostty_last_scan_us,
+	                  job->ghostty_last_changed_rows,
+	                  job->ghostty_hash_rows
 #endif
                   );
 }
@@ -537,6 +598,11 @@ static void ghostty_job_cleanup(struct unixjob *job) {
   job->ghostty_render_update_calls = 0;
   job->ghostty_changed_row_scans = 0;
   job->ghostty_changed_rows_total = 0;
+  job->ghostty_vt_write_us = 0;
+  job->ghostty_render_update_us = 0;
+  job->ghostty_changed_row_scan_us = 0;
+  job->ghostty_last_update_us = 0;
+  job->ghostty_last_scan_us = 0;
   job->ghostty_last_changed_rows = 0;
 }
 
@@ -601,10 +667,15 @@ static int ghostty_job_init(struct unixjob *job, uint16_t cols, uint16_t rows) {
 }
 
 static void ghostty_job_write(struct unixjob *job, const unsigned char *buf, int len) {
+  uint64_t start;
+  uint64_t elapsed;
   if (job->ghostty_terminal == NULL || buf == NULL || len <= 0) return;
+  start = unix_mag_now_us();
   ghostty_terminal_vt_write(job->ghostty_terminal, (const uint8_t *)buf, (size_t)len);
+  elapsed = unix_mag_elapsed_us(start);
   job->ghostty_vt_write_calls++;
   job->ghostty_vt_write_bytes += (uint64_t)len;
+  job->ghostty_vt_write_us += elapsed;
   job->ghostty_render_valid = 0;
 }
 
@@ -649,9 +720,14 @@ static int ghostty_job_update(struct unixjob *job) {
 
   if (job->ghostty_terminal == NULL || job->ghostty_render == NULL) return -1;
   if (!job->ghostty_render_valid) {
+    uint64_t start = unix_mag_now_us();
+    uint64_t elapsed;
     if (ghostty_render_state_update(job->ghostty_render, job->ghostty_terminal) != GHOSTTY_SUCCESS)
       return -1;
+    elapsed = unix_mag_elapsed_us(start);
     job->ghostty_render_update_calls++;
+    job->ghostty_render_update_us += elapsed;
+    job->ghostty_last_update_us = elapsed;
     job->ghostty_render_valid = 1;
   }
   if (ghostty_render_state_get(job->ghostty_render, GHOSTTY_RENDER_STATE_DATA_DIRTY,
@@ -1125,6 +1201,8 @@ static int ghostty_job_copy_changed_rows(struct unixjob *job, unsigned char *out
   GhosttyRenderStateRowIterator row_iter = NULL;
   GhosttyRenderStateRowCells cells = NULL;
   GhosttyResult result;
+  uint64_t start = 0;
+  uint64_t elapsed;
   int y = 0;
   int n = 0;
 
@@ -1132,6 +1210,7 @@ static int ghostty_job_copy_changed_rows(struct unixjob *job, unsigned char *out
   if (job == NULL || job->ghostty_terminal == NULL || job->ghostty_render == NULL)
     return -1;
   job->ghostty_changed_row_scans++;
+  start = unix_mag_now_us();
   if (ghostty_job_update(job) < 0) return -1;
   result = ghostty_render_state_row_iterator_new(NULL, &row_iter);
   if (result != GHOSTTY_SUCCESS) return -1;
@@ -1172,6 +1251,9 @@ static int ghostty_job_copy_changed_rows(struct unixjob *job, unsigned char *out
 
   ghostty_render_state_row_cells_free(cells);
   ghostty_render_state_row_iterator_free(row_iter);
+  elapsed = unix_mag_elapsed_us(start);
+  job->ghostty_changed_row_scan_us += elapsed;
+  job->ghostty_last_scan_us = elapsed;
   if (n >= 0) {
     job->ghostty_last_changed_rows = n;
     job->ghostty_changed_rows_total += (uint64_t)n;
