@@ -442,7 +442,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "pid=%ld\n"
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
-                  "unix-handlecomm-max=42\n"
+                  "unix-handlecomm-max=44\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -519,6 +519,59 @@ static int unix_mag_config_status(unsigned char *out, int cap) {
                   TIMER_INTERVAL, noscroll, LispWindowRequestedWidth,
                   LispWindowRequestedHeight, LispDisplayRequestedWidth,
                   LispDisplayRequestedHeight);
+}
+
+static int unix_mag_gopher_viewport(int top, int selected, int delta, int count,
+                                    int visible, int jump, unsigned char *out,
+                                    int cap) {
+  int old_top = top;
+  int max_top;
+  int repaint;
+
+  if (out == NULL || cap < 9) return -1;
+  if (visible < 1) visible = 1;
+  if (jump < 1) jump = 1;
+
+  if (count < 1) {
+    top = 0;
+    selected = 1;
+  } else {
+    selected += delta;
+    if (selected < 1) selected = 1;
+    if (selected > count) selected = count;
+
+    max_top = count - visible;
+    if (max_top < 0) max_top = 0;
+    if (top < 0) top = 0;
+    if (top > max_top) top = max_top;
+
+    if (selected <= top) {
+      int by_selected = selected - 1;
+      int by_jump = top - jump;
+      top = by_selected < by_jump ? by_selected : by_jump;
+    } else if (selected > top + visible) {
+      int by_selected = selected - visible;
+      int by_jump = top + jump;
+      top = by_selected > by_jump ? by_selected : by_jump;
+    }
+
+    if (top < 0) top = 0;
+    if (top > max_top) top = max_top;
+  }
+
+  repaint = top != old_top;
+
+  out[0] = (unsigned char)(top & 0xff);
+  out[1] = (unsigned char)((top >> 8) & 0xff);
+  out[2] = (unsigned char)((top >> 16) & 0xff);
+  out[3] = (unsigned char)((top >> 24) & 0xff);
+  out[4] = (unsigned char)(selected & 0xff);
+  out[5] = (unsigned char)((selected >> 8) & 0xff);
+  out[6] = (unsigned char)((selected >> 16) & 0xff);
+  out[7] = (unsigned char)((selected >> 24) & 0xff);
+  out[8] = repaint ? 1 : 0;
+
+  return 9;
 }
 
 static const char *unixjob_type_name(enum UJTYPE type) {
@@ -2035,6 +2088,38 @@ static int ghostty_utf8_encode(uint32_t codepoint, char out[4]) {
   return 0;
 }
 
+static const char *ghostty_mag_direct_csi_key(int key_id) {
+  switch (key_id) {
+    case 1: return "\033[A";
+    case 2: return "\033[B";
+    case 3: return "\033[C";
+    case 4: return "\033[D";
+    default: return NULL;
+  }
+}
+
+static int unix_mag_key_encode_status(unsigned char *out, int cap) {
+  static const int key_ids[] = {1, 2, 3, 4};
+  static const char *names[] = {"up", "down", "right", "left"};
+  int used = 0;
+
+  if (out == NULL || cap <= 0) return -1;
+
+  used += snprintf((char *)out + used, (size_t)(cap - used),
+                   "mag-key-encode\n");
+  for (int i = 0; i < 4 && used < cap; i++) {
+    const char *seq = ghostty_mag_direct_csi_key(key_ids[i]);
+    if (seq == NULL) continue;
+    used += snprintf((char *)out + used, (size_t)(cap - used),
+                     "key-id=%d name=%s bytes=%02X %02X %02X final=%c source=direct-csi\n",
+                     key_ids[i], names[i],
+                     (unsigned char)seq[0], (unsigned char)seq[1],
+                     (unsigned char)seq[2], seq[2]);
+  }
+
+  return used < cap ? used : cap - 1;
+}
+
 static int ghostty_job_send_key(struct unixjob *job, int key_id, int mods, uint32_t codepoint) {
   GhosttyKey key;
   GhosttyKeyEvent event = NULL;
@@ -2045,6 +2130,12 @@ static int ghostty_job_send_key(struct unixjob *job, int key_id, int mods, uint3
   GhosttyResult result;
 
   if (job == NULL || job->ghostty_terminal == NULL || job->ghostty_key_encoder == NULL) return -1;
+
+  if (mods == 0 && codepoint == 0) {
+    const char *seq = ghostty_mag_direct_csi_key(key_id);
+    if (seq != NULL) return (int)ghostty_write_all((int)(job - UJ), seq, 3);
+  }
+
   if (!ghostty_mag_key(key_id, &key)) return -1;
   if (ghostty_key_event_new(NULL, &event) != GHOSTTY_SUCCESS) return -1;
 
@@ -2506,6 +2597,11 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*     41 Mag runtime config status, Arg1 = buffer => byte count or NIL  */
 /*     42 Mag reset Ghostty counters, Arg1 = Job # or -1 for all         */
 /*           => reset job count or NIL                                    */
+/*     43 Mag Gopher viewport step, Arg1 = top, Arg2 = selected,          */
+/*           Arg3 = delta, Arg4 = count, Arg5 = visible, Arg6 = jump,     */
+/*           Arg7 = buffer => byte count or NIL                           */
+/*     44 Mag terminal key encode status, Arg1 = buffer                   */
+/*           => byte count or NIL                                          */
 /*                                                                      */
 /************************************************************************/
 
@@ -2846,7 +2942,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(42));
+      return (GetSmallp(44));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -3577,6 +3673,39 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 #else
       return (NIL);
 #endif
+    }
+
+    case 43: /* Mag Gopher viewport step */
+    {
+      DLword *bufp;
+      int top, selected, delta, count, visible, jump, n;
+
+      N_GETNUMBER(args[1], top, bad);
+      N_GETNUMBER(args[2], selected, bad);
+      N_GETNUMBER(args[3], delta, bad);
+      N_GETNUMBER(args[4], count, bad);
+      N_GETNUMBER(args[5], visible, bad);
+      N_GETNUMBER(args[6], jump, bad);
+      bufp = NativeAligned2FromLAddr(args[7]);
+      n = unix_mag_gopher_viewport(top, selected, delta, count, visible, jump,
+                                   (unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 44: /* Mag terminal key encode status */
+    {
+      DLword *bufp;
+      int n;
+
+      bufp = NativeAligned2FromLAddr(args[1]);
+      n = unix_mag_key_encode_status((unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
     }
 
     default: return (NIL);
