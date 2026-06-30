@@ -442,7 +442,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "pid=%ld\n"
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
-                  "unix-handlecomm-max=44\n"
+                  "unix-handlecomm-max=45\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -572,6 +572,70 @@ static int unix_mag_gopher_viewport(int top, int selected, int delta, int count,
   out[8] = repaint ? 1 : 0;
 
   return 9;
+}
+
+static int unix_mag_gopher_viewport_status(unsigned char *out, int cap) {
+  struct viewport_case {
+    const char *name;
+    int top;
+    int selected;
+    int delta;
+    int count;
+    int visible;
+    int jump;
+    int expected_top;
+    int expected_selected;
+    int expected_repaint;
+  };
+  static const struct viewport_case cases[] = {
+      {"same-viewport", 0, 1, 1, 60, 29, 10, 0, 2, 0},
+      {"jump-down", 0, 1, 29, 60, 29, 10, 10, 30, 1},
+      {"jump-up", 10, 30, -29, 60, 29, 10, 0, 1, 1},
+      {"empty", 3, 4, 1, 0, 29, 10, 0, 1, 1},
+  };
+  int used;
+  int fail = 0;
+  int i;
+
+  if (out == NULL || cap <= 0) return -1;
+
+  used = snprintf((char *)out, (size_t)cap, "mag-gopher-viewport\n");
+  if (used < 0 || used >= cap) return cap;
+
+  for (i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
+    unsigned char buf[9] = {0};
+    int n = unix_mag_gopher_viewport(cases[i].top, cases[i].selected,
+                                     cases[i].delta, cases[i].count,
+                                     cases[i].visible, cases[i].jump, buf,
+                                     sizeof(buf));
+    int top = (int)buf[0] | ((int)buf[1] << 8) | ((int)buf[2] << 16) |
+              ((int)buf[3] << 24);
+    int selected = (int)buf[4] | ((int)buf[5] << 8) | ((int)buf[6] << 16) |
+                   ((int)buf[7] << 24);
+    int repaint = (n >= 9) ? (buf[8] != 0) : 0;
+    int ok = n >= 9 && top == cases[i].expected_top &&
+             selected == cases[i].expected_selected &&
+             repaint == cases[i].expected_repaint;
+    int wrote;
+
+    if (!ok) fail = 1;
+    if (used >= cap) break;
+    wrote = snprintf((char *)out + used, (size_t)(cap - used),
+                     "%s %s top=%d selected=%d repaint=%d\n",
+                     ok ? "ok" : "FAIL", cases[i].name, top, selected,
+                     repaint);
+    if (wrote < 0) return -1;
+    used += wrote;
+  }
+
+  if (used < cap) {
+    int wrote = snprintf((char *)out + used, (size_t)(cap - used),
+                         "status=%s\n", fail ? "FAIL" : "ok");
+    if (wrote < 0) return -1;
+    used += wrote;
+  }
+
+  return used;
 }
 
 static const char *unixjob_type_name(enum UJTYPE type) {
@@ -2602,6 +2666,8 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*           Arg7 = buffer => byte count or NIL                           */
 /*     44 Mag terminal key encode status, Arg1 = buffer                   */
 /*           => byte count or NIL                                          */
+/*     45 Mag Gopher native viewport self-test, Arg1 = buffer             */
+/*           => byte count or NIL                                          */
 /*                                                                      */
 /************************************************************************/
 
@@ -2942,7 +3008,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(44));
+      return (GetSmallp(45));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -3702,6 +3768,19 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 
       bufp = NativeAligned2FromLAddr(args[1]);
       n = unix_mag_key_encode_status((unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 45: /* Mag Gopher native viewport self-test */
+    {
+      DLword *bufp;
+      int n;
+
+      bufp = NativeAligned2FromLAddr(args[1]);
+      n = unix_mag_gopher_viewport_status((unsigned char *)bufp, 512);
 #ifdef BYTESWAP
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
