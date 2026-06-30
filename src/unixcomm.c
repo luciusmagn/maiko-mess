@@ -466,7 +466,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "pid=%ld\n"
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
-                  "unix-handlecomm-max=47\n"
+                  "unix-handlecomm-max=48\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -682,6 +682,42 @@ static int unix_mag_gopher_label(int index, unsigned char *out, int cap) {
   return 3;
 }
 
+static const char *unix_mag_gopher_type_tag(int type) {
+  switch (type) {
+    case '0': return "TEXT";
+    case '1': return "DIR ";
+    case '2': return "CSO ";
+    case '3': return "ERR ";
+    case '4': return "HEX ";
+    case '5': return "DOS ";
+    case '6': return "UU  ";
+    case '7': return "FIND";
+    case '8': return "TEL ";
+    case '9': return "BIN ";
+    case '+': return "RED ";
+    case ';': return "VID ";
+    case 'P': return "PDF ";
+    case 'T': return "TN32";
+    case 'd': return "DOC ";
+    case 'g': return "GIF ";
+    case 'h': return "HTML";
+    case 'i': return "    ";
+    case 'I': return "IMG ";
+    case 'p': return "PNG ";
+    case 's': return "SND ";
+    default: return "????";
+  }
+}
+
+static int unix_mag_gopher_type_tag_copy(int type, unsigned char *out, int cap) {
+  const char *tag;
+
+  if (out == NULL || cap < 4) return -1;
+  tag = unix_mag_gopher_type_tag(type);
+  memcpy(out, tag, 4);
+  return 4;
+}
+
 static const char *unixjob_type_name(enum UJTYPE type) {
   switch (type) {
     case UJUNUSED: return "unused";
@@ -799,7 +835,7 @@ static int unix_mag_jobs_status(unsigned char *out, int cap) {
   int omitted = 0;
 
   if (out == NULL || cap <= 0) return -1;
-  if (unix_mag_appendf(out, cap, &used, "mag-jobs\nunix-handlecomm-max=47\n") < 0)
+  if (unix_mag_appendf(out, cap, &used, "mag-jobs\nunix-handlecomm-max=48\n") < 0)
     return -1;
 
   if (UJ == NULL) {
@@ -2815,6 +2851,8 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*           => byte count or NIL                                          */
 /*     47 Mag Gopher item label, Arg1 = zero-based index, Arg2 = buffer    */
 /*           => byte count or NIL                                          */
+/*     48 Mag Gopher type tag, Arg1 = type byte, Arg2 = buffer             */
+/*           => byte count or NIL                                          */
 /*                                                                      */
 /************************************************************************/
 
@@ -3155,7 +3193,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(47));
+      return (GetSmallp(48));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -3955,6 +3993,20 @@ LispPTR Unix_handlecomm(LispPTR *args) {
       N_GETNUMBER(args[1], index, bad);
       bufp = NativeAligned2FromLAddr(args[2]);
       n = unix_mag_gopher_label(index, (unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 48: /* Mag Gopher type tag */
+    {
+      DLword *bufp;
+      int type, n;
+
+      N_GETNUMBER(args[1], type, bad);
+      bufp = NativeAligned2FromLAddr(args[2]);
+      n = unix_mag_gopher_type_tag_copy(type, (unsigned char *)bufp, 512);
 #ifdef BYTESWAP
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
