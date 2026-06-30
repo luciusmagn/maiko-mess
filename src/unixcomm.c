@@ -420,12 +420,12 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
   if (unix_battery_status((unsigned char *)battery, sizeof(battery)) < 0)
     snprintf(battery, sizeof(battery), "battery unavailable");
 
-	  return snprintf((char *)out, (size_t)cap,
-		                  "mag-debug\n"
-		                  "pid=%ld\n"
-		                  "unix-helper=%d alive=%d\n"
-		                  "unix-pipes=%d/%d\n"
-		                  "unix-handlecomm-max=40\n"
+  return snprintf((char *)out, (size_t)cap,
+                  "mag-debug\n"
+                  "pid=%ld\n"
+                  "unix-helper=%d alive=%d\n"
+                  "unix-pipes=%d/%d\n"
+                  "unix-handlecomm-max=41\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -441,33 +441,67 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "ghostty-render-valid=%d\n"
                   "gt-write-calls=%llu\n"
                   "gt-write-bytes=%llu\n"
-	                  "gt-render-updates=%llu\n"
-	                  "gt-change-scans=%llu\n"
-	                  "gt-changed-rows=%llu\n"
-	                  "gt-write-us=%llu\n"
-	                  "gt-update-us=%llu\n"
-	                  "gt-scan-us=%llu\n"
-	                  "gt-last-update-us=%llu\n"
-	                  "gt-last-scan-us=%llu\n"
-	                  "gt-last-changed=%d\n"
-	                  "gt-hash-rows=%d\n"
-	                  "%s\n",
-	                  (long)getpid(), UnixPID, unix_helper_alive,
-	                  UnixPipeIn, UnixPipeOut, NPROCS, used, shells, processes,
-	                  sockets, streams, ghostty_shells, ghostty_render_valid,
+                  "gt-render-updates=%llu\n"
+                  "gt-change-scans=%llu\n"
+                  "gt-changed-rows=%llu\n"
+                  "gt-write-us=%llu\n"
+                  "gt-update-us=%llu\n"
+                  "gt-scan-us=%llu\n"
+                  "gt-last-update-us=%llu\n"
+                  "gt-last-scan-us=%llu\n"
+                  "gt-last-changed=%d\n"
+                  "gt-hash-rows=%d\n"
+                  "%s\n",
+                  (long)getpid(), UnixPID, unix_helper_alive,
+                  UnixPipeIn, UnixPipeOut, NPROCS, used, shells, processes,
+                  sockets, streams, ghostty_shells, ghostty_render_valid,
                   (unsigned long long)ghostty_vt_write_calls,
                   (unsigned long long)ghostty_vt_write_bytes,
-	                  (unsigned long long)ghostty_render_update_calls,
-	                  (unsigned long long)ghostty_changed_row_scans,
-	                  (unsigned long long)ghostty_changed_rows_total,
-	                  (unsigned long long)ghostty_vt_write_us,
-	                  (unsigned long long)ghostty_render_update_us,
-	                  (unsigned long long)ghostty_changed_row_scan_us,
-	                  (unsigned long long)ghostty_last_update_us,
-	                  (unsigned long long)ghostty_last_scan_us,
-	                  ghostty_last_changed_rows_total,
-	                  ghostty_hash_rows_total,
-		                  battery);
+                  (unsigned long long)ghostty_render_update_calls,
+                  (unsigned long long)ghostty_changed_row_scans,
+                  (unsigned long long)ghostty_changed_rows_total,
+                  (unsigned long long)ghostty_vt_write_us,
+                  (unsigned long long)ghostty_render_update_us,
+                  (unsigned long long)ghostty_changed_row_scan_us,
+                  (unsigned long long)ghostty_last_update_us,
+                  (unsigned long long)ghostty_last_scan_us,
+                  ghostty_last_changed_rows_total,
+                  ghostty_hash_rows_total,
+                  battery);
+}
+
+static int unix_mag_config_status(unsigned char *out, int cap) {
+  extern int TIMER_INTERVAL;
+  extern int noscroll;
+  extern unsigned LispDisplayRequestedWidth, LispDisplayRequestedHeight;
+  extern unsigned LispWindowRequestedWidth, LispWindowRequestedHeight;
+#ifdef BIGBIGVM
+  const unsigned max_vmem_mb = 256;
+#elif defined(BIGVM)
+  const unsigned max_vmem_mb = 64;
+#else
+  const unsigned max_vmem_mb = 32;
+#endif
+
+  if (out == NULL || cap <= 0) return -1;
+
+  return snprintf((char *)out, (size_t)cap,
+                  "mag-config\n"
+                  "vmem-process-mb=%u\n"
+                  "vmem-max-mb=%u\n"
+                  "vmem-active-pages=%d\n"
+                  "vmem-last-page=%u\n"
+                  "timer-interval-us=%d\n"
+                  "noscroll=%d\n"
+                  "window=%ux%u\n"
+                  "screen=%ux%u\n",
+                  InterfacePage != NULL ? InterfacePage->process_size : 0,
+                  max_vmem_mb,
+                  InterfacePage != NULL ? InterfacePage->nactivepages : 0,
+                  InterfacePage != NULL ? InterfacePage->dllastvmempage : 0,
+                  TIMER_INTERVAL, noscroll, LispWindowRequestedWidth,
+                  LispWindowRequestedHeight, LispDisplayRequestedWidth,
+                  LispDisplayRequestedHeight);
 }
 
 static const char *unixjob_type_name(enum UJTYPE type) {
@@ -2378,6 +2412,9 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*     38 Mag debug status, Arg1 = buffer => byte count or NIL           */
 /*     39 Mag debug request read+consume, Arg1 = buffer                  */
 /*           => byte count or NIL                                        */
+/*     40 Mag per-job terminal status, Arg1 = Job #, Arg2 = buffer       */
+/*           => byte count or NIL                                        */
+/*     41 Mag runtime config status, Arg1 = buffer => byte count or NIL  */
 /*                                                                      */
 /************************************************************************/
 
@@ -2718,7 +2755,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(40));
+      return (GetSmallp(41));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -3405,6 +3442,19 @@ LispPTR Unix_handlecomm(LispPTR *args) {
       N_GETNUMBER(args[1], slot, bad);
       bufp = NativeAligned2FromLAddr(args[2]);
       n = unix_mag_job_status(slot, (unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 41: /* Mag runtime config status */
+    {
+      DLword *bufp;
+      int n;
+
+      bufp = NativeAligned2FromLAddr(args[1]);
+      n = unix_mag_config_status((unsigned char *)bufp, 512);
 #ifdef BYTESWAP
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
