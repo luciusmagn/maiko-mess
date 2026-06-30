@@ -12,6 +12,7 @@
 
 #include <X11/X.h>        // for NoEventMask, MSBFirst, StructureNotifyMask
 #include <X11/Xlib.h>     // for XSelectInput, XImage, XFlush, DefaultScreen
+#include <X11/Xproto.h>   // for X_SetInputFocus
 #include <assert.h>       // for assert
 #include <signal.h>       // for sig_atomic_t
 #include <stdbool.h>      // for false, bool, true
@@ -58,6 +59,21 @@ extern volatile sig_atomic_t XLocked;
 volatile sig_atomic_t XLocked = 0; /* non-zero while doing X ops, to avoid signals */
 extern volatile sig_atomic_t XNeedSignal;
 volatile sig_atomic_t XNeedSignal = 0; /* T if an X interrupt happened while XLOCK asserted */
+
+static int X_NonFatalErrorHandler(Display *display, XErrorEvent *event)
+{
+  char msg[80];
+
+  XGetErrorText(display, event->error_code, msg, sizeof(msg));
+  if (event->request_code == X_SetInputFocus && event->error_code == BadMatch) {
+    fprintf(stderr, "Ignoring X focus race: %s (resource=0x%lx)\n",
+            msg, event->resourceid);
+  } else {
+    fprintf(stderr, "Ignoring X error: %s (request=%u minor=%u resource=0x%lx)\n",
+            msg, event->request_code, event->minor_code, event->resourceid);
+  }
+  return 0;
+}
 
 /* ubound: return (unsigned) value if it is between lower and upper otherwise lower or upper */
 static inline unsigned ubound(unsigned lower, unsigned value, unsigned upper)
@@ -257,6 +273,7 @@ DspInterface X_init(DspInterface dsp, LispPTR lispbitmap, unsigned width_hint, u
   /* return FALSE. */
   if ((dsp->display_id = XOpenDisplay(dsp->identifier)) == NULL) return (NULL);
 
+  XSetErrorHandler(X_NonFatalErrorHandler);
   XSetIOErrorHandler(X_FatalErrorHandler);
   XSetIOErrorExitHandler(dsp->display_id, X_FatalErrorExitHandler, NULL);
 
