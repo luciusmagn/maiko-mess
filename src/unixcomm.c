@@ -31,6 +31,7 @@ Unix Interface Communications
 #include <netinet/in.h>
 #include <setjmp.h> /* JRB - timeout.h needs setjmp.h */
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -142,6 +143,29 @@ long StartTime; /* Time, for creating pipe filenames */
 
 char shcom[2048]; /* Here because I'm suspicious of */
                   /* large allocations on the stack */
+
+static int unix_mag_appendf(unsigned char *out, int cap, int *used, const char *fmt, ...) {
+  int remaining, n;
+  va_list ap;
+
+  if (out == NULL || used == NULL || cap <= 0) return -1;
+  if (*used >= cap) return 1;
+
+  remaining = cap - *used;
+  va_start(ap, fmt);
+  n = vsnprintf((char *)out + *used, (size_t)remaining, fmt, ap);
+  va_end(ap);
+
+  if (n < 0) return -1;
+  if (n >= remaining) {
+    *used = cap - 1;
+    out[cap - 1] = '\0';
+    return 1;
+  }
+
+  *used += n;
+  return 0;
+}
 
 static void unixjob_init_slot(struct unixjob *job, enum UJTYPE type) {
   job->pathname = NULL;
@@ -442,7 +466,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "pid=%ld\n"
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
-                  "unix-handlecomm-max=45\n"
+                  "unix-handlecomm-max=46\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -744,6 +768,105 @@ static int unix_mag_job_status(int slot, unsigned char *out, int cap) {
 	                  job->ghostty_hash_rows
 #endif
                   );
+}
+
+static int unix_mag_jobs_status(unsigned char *out, int cap) {
+  int used = 0;
+  int jobs = 0;
+  int shells = 0;
+  int ghostty_shells = 0;
+  int emitted = 0;
+  int omitted = 0;
+
+  if (out == NULL || cap <= 0) return -1;
+  if (unix_mag_appendf(out, cap, &used, "mag-jobs\nunix-handlecomm-max=46\n") < 0)
+    return -1;
+
+  if (UJ == NULL) {
+    if (unix_mag_appendf(out, cap, &used, "status=unavailable reason=no UJ\n") < 0)
+      return -1;
+    return used;
+  }
+
+  for (int i = 0; i < NPROCS; i++) {
+    if (UJ[i].type == UJUNUSED) continue;
+    jobs++;
+    if (UJ[i].type == UJSHELL) {
+      shells++;
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+      if (UJ[i].ghostty_terminal != NULL) ghostty_shells++;
+#endif
+    }
+  }
+
+  if (unix_mag_appendf(out, cap, &used,
+                       "nprocs=%d jobs-used=%d shells=%d ghostty-shells=%d\n",
+                       NPROCS, jobs, shells, ghostty_shells) < 0)
+    return -1;
+
+  for (int i = 0; i < NPROCS; i++) {
+    struct unixjob *job;
+    int ghostty = 0;
+    int cols = -1;
+    int rows = -1;
+    int cursor_x = -1;
+    int cursor_y = -1;
+    int cursor_visible = -1;
+    char line[192];
+    int line_len;
+
+    if (UJ[i].type == UJUNUSED) continue;
+    job = &UJ[i];
+
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+    if (job->type == UJSHELL && job->ghostty_terminal != NULL) {
+      uint16_t u16 = 0;
+      bool visible = false;
+      ghostty = 1;
+      if (ghostty_terminal_get(job->ghostty_terminal, GHOSTTY_TERMINAL_DATA_COLS, &u16) == GHOSTTY_SUCCESS)
+        cols = (int)u16;
+      if (ghostty_terminal_get(job->ghostty_terminal, GHOSTTY_TERMINAL_DATA_ROWS, &u16) == GHOSTTY_SUCCESS)
+        rows = (int)u16;
+      if (ghostty_terminal_get(job->ghostty_terminal, GHOSTTY_TERMINAL_DATA_CURSOR_X, &u16) == GHOSTTY_SUCCESS)
+        cursor_x = (int)u16;
+      if (ghostty_terminal_get(job->ghostty_terminal, GHOSTTY_TERMINAL_DATA_CURSOR_Y, &u16) == GHOSTTY_SUCCESS)
+        cursor_y = (int)u16;
+      if (ghostty_terminal_get(job->ghostty_terminal, GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, &visible) == GHOSTTY_SUCCESS)
+        cursor_visible = visible ? 1 : 0;
+    }
+#endif
+
+    line_len = snprintf(line, sizeof(line),
+                        "job slot=%d type=%s pid=%d status=%d ghostty=%d size=%dx%d cursor=%d,%d visible=%d calls=%llu rows=%llu\n",
+                        i, unixjob_type_name(job->type), job->PID, job->status,
+                        ghostty, cols, rows, cursor_x, cursor_y, cursor_visible,
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+                        (unsigned long long)job->ghostty_vt_write_calls,
+                        (unsigned long long)job->ghostty_changed_rows_total
+#else
+                        0ULL, 0ULL
+#endif
+                        );
+    if (line_len < 0) return -1;
+    if (line_len >= (int)sizeof(line)) {
+      line[sizeof(line) - 2] = '\n';
+      line[sizeof(line) - 1] = '\0';
+      line_len = (int)strlen(line);
+    }
+    if (used + line_len + 32 >= cap) {
+      omitted++;
+      continue;
+    }
+    if (unix_mag_appendf(out, cap, &used, "%s", line) < 0) return -1;
+    emitted++;
+  }
+
+  if (used + 32 < cap) {
+    if (unix_mag_appendf(out, cap, &used, "emitted=%d omitted=%d\n", emitted, omitted) < 0)
+      return -1;
+  }
+
+  return used;
 }
 
 #ifdef MAIKO_ENABLE_GHOSTTY_VT
@@ -2668,6 +2791,8 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*           => byte count or NIL                                          */
 /*     45 Mag Gopher native viewport self-test, Arg1 = buffer             */
 /*           => byte count or NIL                                          */
+/*     46 Mag bounded native job list, Arg1 = buffer                       */
+/*           => byte count or NIL                                          */
 /*                                                                      */
 /************************************************************************/
 
@@ -3008,7 +3133,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(45));
+      return (GetSmallp(46));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -3781,6 +3906,19 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 
       bufp = NativeAligned2FromLAddr(args[1]);
       n = unix_mag_gopher_viewport_status((unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 46: /* Mag bounded native job list */
+    {
+      DLword *bufp;
+      int n;
+
+      bufp = NativeAligned2FromLAddr(args[1]);
+      n = unix_mag_jobs_status((unsigned char *)bufp, 512);
 #ifdef BYTESWAP
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
