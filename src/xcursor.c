@@ -64,7 +64,6 @@ void Init_XCursor(void) {
   cursorlist->next = NULL;
   for (i = 0; i < CURSORHEIGHT; i++) cursorlist->bitmap[i] = newbm[i];
   set_Xcursor(currentdsp, (uint8_t *)newbm, 0, 0, &(cursorlist->Xid), 1);
-  DefineCursor(currentdsp, currentdsp->DisplayWindow, &(cursorlist->Xid));
 } /* end Init_XCursor */
 
 /************************************************************************/
@@ -84,6 +83,10 @@ void Init_XCursor(void) {
 
 void Set_XCursor(int x, int y)
 {
+  (void)x;
+  (void)y;
+
+#if 0
   /* compare cursor in IOPage memory with cursors we've seen before */
   struct MXCURSOR *clp, *clbp = NULL;
   DLword *newbm = ((DLword *)(IOPage->dlcursorbitmap));
@@ -128,6 +131,7 @@ void Set_XCursor(int x, int y)
   Current_Hot_Y = 15 - y; /* Added 15- to fix window-edge trouble */
 #endif                    /* NEWXCURSOR */
 
+#endif
 } /* end Set_XCursor */
 
 /************************************************************************/

@@ -31,10 +31,18 @@ ifeq ($(USE_DISPLAY),init)
   DEFAULT_TARGET := ../$(OSARCHNAME)/ldeinit
 endif
 
+GHOSTTY_VT_PREFIX ?= /home/mag/src/ghostty/zig-out
+ifneq ($(wildcard $(GHOSTTY_VT_PREFIX)/include/ghostty/vt.h),)
+ifneq ($(wildcard $(GHOSTTY_VT_PREFIX)/lib/libghostty-vt.a),)
+  ADDITIONAL_DFLAGS += -DMAIKO_ENABLE_GHOSTTY_VT -DGHOSTTY_STATIC -I$(GHOSTTY_VT_PREFIX)/include
+  GHOSTTY_VT_LDFLAGS := $(GHOSTTY_VT_PREFIX)/lib/libghostty-vt.a
+endif
+endif
+
 OPTFLAGS ?=  -O2 -g3
 DFLAGS = $(XFLAGS) -DRELEASE=$(RELEASE) $(BSD_CFLAGS) $(ADDITIONAL_DFLAGS)
 
-LDFLAGS =  $(XLDFLAGS) -lc -lm $(BSD_LDFLAGS)
+LDFLAGS =  $(XLDFLAGS) -lc -lm $(BSD_LDFLAGS) $(GHOSTTY_VT_LDFLAGS)
 
 ifeq ($(USE_DISPLAY),x)
   LDELDFLAGS =  $(XLDFLAGS) -lc -lm $(BSD_LDFLAGS)

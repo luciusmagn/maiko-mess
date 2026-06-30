@@ -15,8 +15,10 @@
 #include <X11/Xlib.h>      // for XEvent, XMoveResizeWindow, XAnyEvent, XBut...
 #include <X11/Xutil.h>     // for XLookupString
 #include <stdio.h>         // for printf
+#include <stdlib.h>        // for getenv, atoi
 #include <string.h>        // for memset
 #include <sys/types.h>     // for u_char
+#include <time.h>          // for time
 #include "devif.h"         // for (anonymous), MRegion, DefineCursor, OUTER_...
 #include "keyeventdefs.h"  // for kb_trans
 #include "keysym.h"        // for KEY_* Lisp key codes
@@ -65,11 +67,31 @@ typedef struct {
 static XSentKey x_sent_keys[256];
 static int x_lshift_down = FALSE;
 static int x_rshift_down = FALSE;
+static int startup_typeahead_state = 0;
+static time_t startup_typeahead_at = 0;
 
 static void record_key_event(void)
 {
   DoRing();
   if ((KBDEventFlg += 1) > 0) Irq_Stk_End = Irq_Stk_Check = 0;
+}
+
+static void inject_lisp_key(u_char code, int needs_shift)
+{
+  if (needs_shift) {
+    kb_trans(KEY_LEFTSHIFT, FALSE);
+    record_key_event();
+  }
+
+  kb_trans(code, FALSE);
+  record_key_event();
+  kb_trans(code, TRUE);
+  record_key_event();
+
+  if (needs_shift) {
+    kb_trans(KEY_LEFTSHIFT, TRUE);
+    record_key_event();
+  }
 }
 
 static int ascii_to_lisp_key(unsigned char c, u_char *code, int *needs_shift)
@@ -140,6 +162,65 @@ static int ascii_to_lisp_key(unsigned char c, u_char *code, int *needs_shift)
     case ')': *code = KEY_0; *needs_shift = TRUE; return TRUE;
     default: return FALSE;
   }
+}
+
+static void inject_ascii_char(int ch)
+{
+  u_char code = 255;
+  int needs_shift = FALSE;
+
+  if (ch == '\r') ch = '\n';
+  if (ascii_to_lisp_key((unsigned char)ch, &code, &needs_shift)) inject_lisp_key(code, needs_shift);
+}
+
+static void inject_startup_typeahead_file(const char *path)
+{
+  FILE *file = NULL;
+  int ch;
+
+  if (path == NULL || path[0] == '\0') return;
+
+  file = fopen(path, "r");
+  if (file == NULL) {
+    perror("MAIKO_STARTUP_TYPEAHEAD_FILE");
+    return;
+  }
+
+  while ((ch = fgetc(file)) != EOF) inject_ascii_char(ch);
+
+  fclose(file);
+}
+
+static void maybe_inject_startup_typeahead(void)
+{
+  const char *path;
+  const char *delay_text;
+  int delay = 10;
+  time_t now;
+
+  if (startup_typeahead_state == 2) return;
+
+  path = getenv("MAIKO_STARTUP_TYPEAHEAD_FILE");
+  if (path == NULL || path[0] == '\0') {
+    startup_typeahead_state = 2;
+    return;
+  }
+
+  now = time(NULL);
+  if (startup_typeahead_state == 0) {
+    delay_text = getenv("MAIKO_STARTUP_TYPEAHEAD_DELAY");
+    if (delay_text != NULL && delay_text[0] != '\0') {
+      int parsed = atoi(delay_text);
+      if (parsed >= 0 && parsed < 300) delay = parsed;
+    }
+    startup_typeahead_at = now + delay;
+    startup_typeahead_state = 1;
+  }
+
+  if (now < startup_typeahead_at) return;
+
+  startup_typeahead_state = 2;
+  inject_startup_typeahead_file(path);
 }
 
 static u_char xkey_to_lisp_key(const XKeyEvent *event)
@@ -389,6 +470,8 @@ extern int Current_Hot_X, Current_Hot_Y; /* Cursor hotspot */
 void process_Xevents(DspInterface dsp)
 {
   XEvent report;
+
+  maybe_inject_startup_typeahead();
 
   while (XPending(dsp->display_id)) {
     XNextEvent(dsp->display_id, &report);

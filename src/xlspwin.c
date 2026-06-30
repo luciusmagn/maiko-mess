@@ -14,6 +14,7 @@
 #include "version.h"
 
 #include <X11/X.h>        // for Cursor, CWOverrideRedirect, GCBackground
+#include <X11/cursorfont.h>
 #include <X11/Xlib.h>     // for XCreateSimpleWindow, XMapWindow, XChangeWin...
 #include <X11/Xutil.h>    // for XSizeHints, XStringListToTextProperty, XWMH...
 #include <stdio.h>        // for NULL
@@ -195,10 +196,17 @@ void Create_LispWindow(DspInterface dsp)
       dsp->display_id, dsp->LispWindow, (char *)plain_bits, 16, 16, foregroundPixel,
       backgroundPixel, (unsigned)DefaultDepthOfScreen(screen));
 
-  set_Xcursor(dsp, default_cursor.cuimage, (int)default_cursor.cuhotspotx,
-              (int)(15 - default_cursor.cuhotspoty), &DefaultCursor, 0);
-  set_Xcursor(dsp, wait_cursor.cuimage, (int)wait_cursor.cuhotspotx,
-              (int)(15 - wait_cursor.cuhotspoty), &WaitCursor, 0);
+  /*
+   * Keep the main display pointer stable.  Medley's historical custom cursor
+   * bitmaps are mutated by Lisp cursor machinery and can visibly flicker under
+   * X; use the normal X pointer for both default and wait states.
+   */
+  DefaultCursor = XCreateFontCursor(dsp->display_id, XC_left_ptr);
+  if (DefaultCursor == None) {
+    set_Xcursor(dsp, default_cursor.cuimage, (int)default_cursor.cuhotspotx,
+                (int)(15 - default_cursor.cuhotspoty), &DefaultCursor, 0);
+  }
+  WaitCursor = DefaultCursor;
   set_Xcursor(dsp, scrolldown_cursor.cuimage, (int)scrolldown_cursor.cuhotspotx,
               (int)(15 - scrolldown_cursor.cuhotspoty), &ScrollDownCursor, 0);
   set_Xcursor(dsp, scrollleft_cursor.cuimage, (int)scrollleft_cursor.cuhotspotx,
@@ -215,6 +223,7 @@ void Create_LispWindow(DspInterface dsp)
               (int)(15 - scrollright_cursor.cuhotspoty), &ScrollRightCursor, 0);
   set_Xcursor(dsp, scrollup_cursor.cuimage, (int)scrollup_cursor.cuhotspotx,
               (int)(15 - scrollup_cursor.cuhotspoty), &ScrollUpCursor, 0);
+  DefineCursor(dsp, dsp->DisplayWindow, &DefaultCursor);
 
   if (noscroll == 0) {
     /********************************/

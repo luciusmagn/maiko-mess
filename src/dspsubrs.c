@@ -116,8 +116,14 @@ void DSP_Cursor(LispPTR *args, int argnum)
 
 
 #if defined(XWINDOW)
-  /* For X-Windows, set the cursor to the given location. */
-  Set_XCursor((int)(args[0] & 0xFFFF), (int)(args[1] & 0xFFFF));
+  /*
+   * Do not let Lisp cursor-shape changes redefine the X mouse pointer.
+   * The active Medley-rendered terminal moves its text caret frequently; under
+   * X those cursor updates were surfacing as visible pointer flashing.
+   */
+  (void)args;
+  (void)argnum;
+  return;
 #elif defined(SDL)
   sdl_setCursor((int)(args[0] & 0xFFFF), (int)(args[1] & 0xFFFF));
 #endif /* XWINDOW */
@@ -178,6 +184,14 @@ extern int Current_Hot_X, Current_Hot_Y;
 #endif /* XWINDOW */
 
 void flip_cursor(void) {
+#if defined(XWINDOW)
+  /*
+   * Medley historically blinked the hardware cursor by inverting the cursor
+   * bitmap.  Under X this mutates the actual mouse pointer and causes visible
+   * black-box flashing, so leave the pointer alone.
+   */
+  return;
+#else
   DLword *word;
   int cnt;
   extern int ScreenLocked;
@@ -204,10 +218,8 @@ void flip_cursor(void) {
 #endif
 
 
-#if defined(XWINDOW)
-  /* JDS 011213: 15- cur y, as function does same! */
-  Set_XCursor(Current_Hot_X, 15 - Current_Hot_Y);
-#elif defined(SDL)
+#if defined(SDL)
   sdl_setCursor(0, 0); // TODO: keep track of the current hot_x and hot_y
+#endif /* SDL */
 #endif /* XWINDOW */
 }
