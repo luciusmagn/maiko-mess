@@ -13,6 +13,7 @@
 
 #include <X11/X.h>         // for Button1, Cursor, ButtonPress, Button2, But...
 #include <X11/Xlib.h>      // for XEvent, XMoveResizeWindow, XAnyEvent, XBut...
+#include <X11/keysym.h>    // for XK_Left, XK_Right, XK_Up, XK_Down
 #include <X11/Xutil.h>     // for XLookupString
 #include <stdio.h>         // for printf
 #include <stdlib.h>        // for getenv, atoi
@@ -231,6 +232,34 @@ static u_char xkey_to_lisp_key(const XKeyEvent *event)
   return SUNLispKeyMap[index];
 }
 
+static u_char x_arrow_keysym_to_lisp_key(KeySym keysym)
+{
+  switch (keysym) {
+    case XK_Left:
+#ifdef XK_KP_Left
+    case XK_KP_Left:
+#endif
+      return KEY_KP_4;
+    case XK_Right:
+#ifdef XK_KP_Right
+    case XK_KP_Right:
+#endif
+      return KEY_KP_6;
+    case XK_Up:
+#ifdef XK_KP_Up
+    case XK_KP_Up:
+#endif
+      return KEY_KP_8;
+    case XK_Down:
+#ifdef XK_KP_Down
+    case XK_KP_Down:
+#endif
+      return KEY_KP_2;
+    default:
+      return 255;
+  }
+}
+
 static void update_tracked_shift(u_char code, int upflg)
 {
   if (code == KEY_LEFTSHIFT) x_lshift_down = !upflg;
@@ -241,6 +270,14 @@ static void handle_X_key(XKeyEvent *event, int upflg)
 {
   int index = (int)event->keycode;
   XSentKey *sent = (index >= 0 && index < 256) ? &x_sent_keys[index] : NULL;
+  u_char arrow_code = x_arrow_keysym_to_lisp_key(XLookupKeysym(event, 0));
+
+  if (arrow_code != 255) {
+    if (sent) memset(sent, 0, sizeof(*sent));
+    kb_trans(arrow_code, upflg);
+    record_key_event();
+    return;
+  }
 
   if (upflg) {
     if (sent && sent->handled) {
