@@ -15,6 +15,7 @@
 #include <X11/Xlib.h>      // for XEvent, XMoveResizeWindow, XAnyEvent, XBut...
 #include <X11/keysym.h>    // for XK_Left, XK_Right, XK_Up, XK_Down
 #include <X11/Xutil.h>     // for XLookupString
+#include <errno.h>         // for errno, EINVAL
 #include <stdio.h>         // for printf
 #include <stdlib.h>        // for getenv, atoi
 #include <string.h>        // for memset
@@ -179,22 +180,36 @@ static void inject_ascii_char(int ch)
   if (ascii_to_lisp_key((unsigned char)ch, &code, &needs_shift)) inject_lisp_key(code, needs_shift);
 }
 
-static void inject_startup_typeahead_file(const char *path)
+int mag_inject_typeahead_file(const char *path)
 {
   FILE *file = NULL;
   int ch;
+  int count = 0;
 
-  if (path == NULL || path[0] == '\0') return;
-
-  file = fopen(path, "r");
-  if (file == NULL) {
-    perror("MAIKO_STARTUP_TYPEAHEAD_FILE");
-    return;
+  if (path == NULL || path[0] == '\0') {
+    errno = EINVAL;
+    return -1;
   }
 
-  while ((ch = fgetc(file)) != EOF) inject_ascii_char(ch);
+  file = fopen(path, "r");
+  if (file == NULL) return -1;
 
+  while ((ch = fgetc(file)) != EOF) {
+    inject_ascii_char(ch);
+    count++;
+  }
+
+  if (ferror(file)) {
+    fclose(file);
+    return -1;
+  }
   fclose(file);
+  return count;
+}
+
+static void inject_startup_typeahead_file(const char *path)
+{
+  if (mag_inject_typeahead_file(path) < 0) perror("MAIKO_STARTUP_TYPEAHEAD_FILE");
 }
 
 static void maybe_inject_startup_typeahead(void)

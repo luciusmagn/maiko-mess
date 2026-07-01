@@ -69,6 +69,14 @@ Unix Interface Communications
 #include "byteswapdefs.h"
 #include "commondefs.h"
 
+#ifdef XWINDOW
+#define MAG_UNIX_HANDLECOMM_MAX 49
+#define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
+extern int mag_inject_typeahead_file(const char *path);
+#else
+#define MAG_UNIX_HANDLECOMM_MAX 48
+#endif
+
 static inline ssize_t SAFEREAD(int f, unsigned char *b, int c) {
   ssize_t res;
   do {
@@ -466,7 +474,7 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "pid=%ld\n"
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
-                  "unix-handlecomm-max=48\n"
+                  "unix-handlecomm-max=%d\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -494,7 +502,8 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "gt-hash-rows=%d\n"
                   "%s\n",
                   (long)getpid(), UnixPID, unix_helper_alive,
-                  UnixPipeIn, UnixPipeOut, NPROCS, used, shells, processes,
+                  UnixPipeIn, UnixPipeOut, MAG_UNIX_HANDLECOMM_MAX,
+                  NPROCS, used, shells, processes,
                   sockets, streams, ghostty_shells, ghostty_render_valid,
                   (unsigned long long)ghostty_vt_write_calls,
                   (unsigned long long)ghostty_vt_write_bytes,
@@ -835,7 +844,8 @@ static int unix_mag_jobs_status(unsigned char *out, int cap) {
   int omitted = 0;
 
   if (out == NULL || cap <= 0) return -1;
-  if (unix_mag_appendf(out, cap, &used, "mag-jobs\nunix-handlecomm-max=48\n") < 0)
+  if (unix_mag_appendf(out, cap, &used, "mag-jobs\nunix-handlecomm-max=%d\n",
+                       MAG_UNIX_HANDLECOMM_MAX) < 0)
     return -1;
 
   if (UJ == NULL) {
@@ -3193,7 +3203,7 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         return (GetSmallp(UJ[slot].status));
 
     case 8: /* Return largest supported command */
-      return (GetSmallp(48));
+      return (GetSmallp(MAG_UNIX_HANDLECOMM_MAX));
 
     case 9: /* Read buffer */
       /**********************************************************/
@@ -4011,6 +4021,17 @@ LispPTR Unix_handlecomm(LispPTR *args) {
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
       return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
+    }
+
+    case 49: /* Mag runtime typeahead injection for MCP eval */
+    {
+#ifdef XWINDOW
+      int n = mag_inject_typeahead_file(MAG_RUNTIME_TYPEAHEAD_PATH);
+      if (n >= 0) unlink(MAG_RUNTIME_TYPEAHEAD_PATH);
+      return (n >= 0) ? GetSmallp(n) : NIL;
+#else
+      return (NIL);
+#endif
     }
 
     default: return (NIL);

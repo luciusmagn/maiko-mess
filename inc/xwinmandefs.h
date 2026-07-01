@@ -8,4 +8,5 @@ void enable_Xkeyboard(DspInterface dsp);
 void disable_Xkeyboard(DspInterface dsp);
 void beep_Xkeyboard(DspInterface dsp);
 void process_Xevents(DspInterface dsp);
+int mag_inject_typeahead_file(const char *path);
 #endif
