@@ -55,6 +55,7 @@ Unix Interface Communications
 
 #include "address.h"
 #include "adr68k.h"
+#include "gcdata.h"
 #include "lsptypes.h"
 #include "lispmap.h"
 #include "emlglob.h"
@@ -70,7 +71,7 @@ Unix Interface Communications
 #include "commondefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 49
+#define MAG_UNIX_HANDLECOMM_MAX 50
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 extern int mag_inject_typeahead_file(const char *path);
 #else
@@ -518,6 +519,184 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   ghostty_last_changed_rows_total,
                   ghostty_hash_rows_total,
                   battery);
+}
+
+static unsigned int unix_mag_gc_htcoll_max(void) {
+#ifdef BIGVM
+  return (unsigned int)((HTCOLL_SIZE / DLWORDSPER_CELL) - 16);
+#else
+  return (unsigned int)(HTCOLL_SIZE - 16);
+#endif
+}
+
+static int unix_mag_lisp_smallp_value(LispPTR value, int *out) {
+  if ((value & SEGMASK) == S_POSITIVE) {
+    *out = (int)(value & 0xFFFF);
+    return 1;
+  }
+  if ((value & SEGMASK) == S_NEGATIVE) {
+    *out = (int)(value | 0xFFFF0000);
+    return 1;
+  }
+  return 0;
+}
+
+static void unix_mag_gc_htcoll_free_scan(unsigned int max, unsigned int *count,
+                                         unsigned int *bad,
+                                         unsigned int *last_offset) {
+  GCENTRY offset;
+  unsigned int guard = 0;
+
+  *count = 0;
+  *bad = 0;
+  *last_offset = 0;
+  if (HTcoll == NULL || max == 0) return;
+
+  offset = GETGC(HTcoll);
+  while (offset != 0) {
+    *last_offset = (unsigned int)offset;
+    if ((offset & 1) != 0 || offset + 1 >= max || guard >= max) {
+      *bad = 1;
+      return;
+    }
+    (*count)++;
+    offset = GETGC((GCENTRY *)HTcoll + offset + 1);
+    guard++;
+  }
+}
+
+static unsigned int unix_mag_gc_htbig_capacity(void) {
+  return (unsigned int)(((unsigned long)HTBIG_SIZE * BYTESPER_DLWORD) /
+                        sizeof(struct gc_ovfl));
+}
+
+static int unix_mag_gc_status(unsigned char *out, int cap) {
+  int used = 0;
+  unsigned int htcoll_max;
+  unsigned int htcoll_capacity_links;
+  unsigned int htcoll_free_head = 0;
+  unsigned int htcoll_nextfree = 0;
+  unsigned int htcoll_highwater_links = 0;
+  unsigned int htcoll_free_links = 0;
+  unsigned int htcoll_live_links = 0;
+  unsigned int htcoll_free_bad = 0;
+  unsigned int htcoll_free_last = 0;
+  unsigned int htcoll_live_pct = 0;
+  unsigned int htcoll_highwater_pct = 0;
+  unsigned int htbig_capacity;
+  unsigned int htbig_used = 0;
+  unsigned int htbig_free = 0;
+  unsigned int htbig_empty = 0;
+  unsigned int htbig_first_empty = 0;
+  LispPTR reclaim_countdown = Reclaim_cnt_word != NULL ? *Reclaim_cnt_word : NIL;
+  LispPTR reclaim_min = ReclaimMin_word != NULL ? *ReclaimMin_word : NIL;
+  int reclaim_countdown_small = 0;
+  int reclaim_min_small = 0;
+  int reclaim_countdown_is_small =
+      unix_mag_lisp_smallp_value(reclaim_countdown, &reclaim_countdown_small);
+  int reclaim_min_is_small =
+      unix_mag_lisp_smallp_value(reclaim_min, &reclaim_min_small);
+
+  if (out == NULL || cap <= 0) return -1;
+  if (HTcoll == NULL || HTbigcount == NULL) {
+    return snprintf((char *)out, (size_t)cap,
+                    "mag-gc\nstatus=unavailable reason=no-gc-tables\n");
+  }
+
+  htcoll_max = unix_mag_gc_htcoll_max();
+  htcoll_capacity_links = htcoll_max > 2 ? (htcoll_max - 2) / 2 : 0;
+  htcoll_free_head = (unsigned int)GETGC(HTcoll);
+  htcoll_nextfree = (unsigned int)GETGC((GCENTRY *)HTcoll + 1);
+  htcoll_highwater_links =
+      htcoll_nextfree > 2 ? (htcoll_nextfree - 2) / 2 : 0;
+  unix_mag_gc_htcoll_free_scan(htcoll_max, &htcoll_free_links, &htcoll_free_bad,
+                               &htcoll_free_last);
+  htcoll_live_links =
+      htcoll_highwater_links >= htcoll_free_links
+          ? htcoll_highwater_links - htcoll_free_links
+          : 0;
+  if (htcoll_capacity_links != 0) {
+    htcoll_live_pct =
+        (unsigned int)(((unsigned long)htcoll_live_links * 100UL) /
+                       htcoll_capacity_links);
+    htcoll_highwater_pct =
+        (unsigned int)(((unsigned long)htcoll_highwater_links * 100UL) /
+                       htcoll_capacity_links);
+  }
+
+  htbig_capacity = unix_mag_gc_htbig_capacity();
+  {
+    struct gc_ovfl *entry = (struct gc_ovfl *)HTbigcount;
+    for (unsigned int i = 0; i < htbig_capacity; i++) {
+      LispPTR ptr = entry[i].ovfl_ptr;
+      if (ptr == NIL) {
+        htbig_first_empty = i;
+        htbig_empty = htbig_capacity - i;
+        break;
+      }
+      if (ptr == ATOM_T)
+        htbig_free++;
+      else
+        htbig_used++;
+    }
+  }
+
+  if (unix_mag_appendf(out, cap, &used,
+                       "mag-gc\n"
+                       "gc-disabled=%d\n"
+                       "htcoll-head=%u\n"
+                       "htcoll-next=%u\n"
+                       "htcoll-max=%u\n"
+                       "htcoll-cap-links=%u\n"
+                       "htcoll-hi-links=%u\n"
+                       "htcoll-free-links=%u\n"
+                       "htcoll-live-links=%u\n"
+                       "htcoll-live-pct=%u\n"
+                       "htcoll-hi-pct=%u\n"
+                       "htcoll-free-bad=%u\n"
+                       "htcoll-free-last=%u\n",
+                       GcDisabled_word != NULL && *GcDisabled_word == ATOM_T,
+                       htcoll_free_head, htcoll_nextfree, htcoll_max,
+                       htcoll_capacity_links, htcoll_highwater_links,
+                       htcoll_free_links, htcoll_live_links, htcoll_live_pct,
+                       htcoll_highwater_pct, htcoll_free_bad,
+                       htcoll_free_last) < 0)
+    return -1;
+
+  if (unix_mag_appendf(out, cap, &used,
+                       "htbig-cap=%u\n"
+                       "htbig-used=%u\n"
+                       "htbig-free=%u\n"
+                       "htbig-empty=%u\n"
+                       "htbig-first-empty=%u\n",
+                       htbig_capacity, htbig_used, htbig_free, htbig_empty,
+                       htbig_first_empty) < 0)
+    return -1;
+
+  if (unix_mag_appendf(out, cap, &used,
+                       "reclaim-countdown-raw=0x%08x\n",
+                       reclaim_countdown) < 0)
+    return -1;
+  if (reclaim_countdown_is_small) {
+    if (unix_mag_appendf(out, cap, &used, "reclaim-countdown-small=%d\n",
+                         reclaim_countdown_small) < 0)
+      return -1;
+  } else if (unix_mag_appendf(out, cap, &used,
+                              "reclaim-countdown-small=na\n") < 0) {
+    return -1;
+  }
+  if (unix_mag_appendf(out, cap, &used, "reclaim-min-raw=0x%08x\n",
+                       reclaim_min) < 0)
+    return -1;
+  if (reclaim_min_is_small) {
+    if (unix_mag_appendf(out, cap, &used, "reclaim-min-small=%d\n",
+                         reclaim_min_small) < 0)
+      return -1;
+  } else if (unix_mag_appendf(out, cap, &used, "reclaim-min-small=na\n") < 0) {
+    return -1;
+  }
+
+  return used;
 }
 
 static int unix_mag_config_status(unsigned char *out, int cap) {
@@ -4032,6 +4211,19 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 #else
       return (NIL);
 #endif
+    }
+
+    case 50: /* Mag GC table status */
+    {
+      DLword *bufp;
+      int n;
+
+      bufp = NativeAligned2FromLAddr(args[1]);
+      n = unix_mag_gc_status((unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
     }
 
     default: return (NIL);
