@@ -232,15 +232,19 @@ static const int generic_X_keymap[] = {
     0, 95, XK_KP_Multiply,
     0, 95, XK_F26,
 
-    /* Arrow keys.  Keep physical arrows on the dedicated arrow key numbers.
-       Mapping them through keypad digit codes gives TTY consumers two subtly
-       different raw input paths. */
+    /* Arrow keys.  Prefer keypad-style codes so raw \GETKEY consumers such as
+       Mag Shell and Mag Keys receive buffered arrow input.  The dedicated
+       arrow codes remain as fallback aliases and are decoded by Mag Lisp. */
+    1, 84, XK_Left,
     0, 129, XK_Left,
 
+    1, 82, XK_Up,
     0, 130, XK_Up,
 
+    1, 69, XK_Down,
     0, 131, XK_Down,
 
+    1, 87, XK_Right,
     0, 132, XK_Right,
 
     0, 93, XK_Multi_key,   /* Expand, Sun type-4 */

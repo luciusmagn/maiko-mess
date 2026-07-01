@@ -54,10 +54,6 @@ extern void DoRing(void);
 #define KEYSET_RIGHTMIDDLE 11
 #define KEYSET_RIGHT 12
 
-#define KEY_ARROW_LEFT 129
-#define KEY_ARROW_UP 130
-#define KEY_ARROW_DOWN 131
-#define KEY_ARROW_RIGHT 132
 /* Mouse buttons */
 #define MOUSE_LEFT 13
 #define MOUSE_RIGHT 14
@@ -259,22 +255,22 @@ static u_char x_arrow_keysym_to_lisp_key(KeySym keysym)
 #ifdef XK_KP_Left
     case XK_KP_Left:
 #endif
-      return KEY_ARROW_LEFT;
+      return KEY_KP_4;
     case XK_Right:
 #ifdef XK_KP_Right
     case XK_KP_Right:
 #endif
-      return KEY_ARROW_RIGHT;
+      return KEY_KP_6;
     case XK_Up:
 #ifdef XK_KP_Up
     case XK_KP_Up:
 #endif
-      return KEY_ARROW_UP;
+      return KEY_KP_8;
     case XK_Down:
 #ifdef XK_KP_Down
     case XK_KP_Down:
 #endif
-      return KEY_ARROW_DOWN;
+      return KEY_KP_2;
     default:
       return 255;
   }
