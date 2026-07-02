@@ -283,7 +283,7 @@ static void update_tracked_shift(u_char code, int upflg)
   if (code == KEY_RIGHTSHIFT) x_rshift_down = !upflg;
 }
 
-static void handle_X_key(XKeyEvent *event, int upflg)
+void maiko_handle_X_key(XKeyEvent *event, int upflg)
 {
   int index = (int)event->keycode;
   XSentKey *sent = (index >= 0 && index < 256) ? &x_sent_keys[index] : NULL;
@@ -541,10 +541,10 @@ void process_Xevents(DspInterface dsp)
               (short)((report.xmotion.y + dsp->Visible.y) & 0xFFFF) - Current_Hot_Y;
           break;
         case KeyPress:
-          handle_X_key(&report.xkey, FALSE);
+          maiko_handle_X_key(&report.xkey, FALSE);
           break;
         case KeyRelease:
-          handle_X_key(&report.xkey, TRUE);
+          maiko_handle_X_key(&report.xkey, TRUE);
           break;
         case ButtonPress:
           switch (report.xbutton.button) {
@@ -587,10 +587,10 @@ void process_Xevents(DspInterface dsp)
     else if (report.xany.window == dsp->LispWindow)
       switch (report.xany.type) {
         case KeyPress:
-          handle_X_key(&report.xkey, FALSE);
+          maiko_handle_X_key(&report.xkey, FALSE);
           break;
         case KeyRelease:
-          handle_X_key(&report.xkey, TRUE);
+          maiko_handle_X_key(&report.xkey, TRUE);
           break;
         case ConfigureNotify:
           lisp_Xconfigure(dsp, report.xconfigure.x, report.xconfigure.y, (unsigned)report.xconfigure.width,

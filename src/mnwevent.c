@@ -25,6 +25,7 @@
 #include "lspglob.h"
 #include "adr68k.h"
 #include "cell.h"
+#include "xwinmandefs.h"
 
 extern XEvent report;
 
@@ -155,7 +156,7 @@ void HandleButton(Widget widget, WindowInterface wif, XButtonEvent *xevent, Bool
 
 void HandleKey(Widget widget, WindowInterface wif, XKeyEvent *xevent, Boolean *continue_to_dispatch)
 {
-  lisp_Xkeyboard(xevent, 0);
+  maiko_handle_X_key(xevent, xevent->type == KeyRelease);
 
 #ifdef NEVER
   if ((mevent = NewEvent()) != NULL) {
@@ -424,7 +425,9 @@ void getMNWsignaldata(int fd)
     if (wif) {
       switch (report.type) {
         case KeyPress:
-        case KeyRelease: lisp_Xkeyboard(&report, 0); break;
+        case KeyRelease:
+          maiko_handle_X_key(&report.xkey, report.type == KeyRelease);
+          break;
 
         case ButtonPress:
         case ButtonRelease: lisp_Xbutton(&report, 0); break;

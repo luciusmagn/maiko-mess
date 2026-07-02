@@ -77,7 +77,7 @@ Unix Interface Communications
 #include "magdisplaydefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 58
+#define MAG_UNIX_HANDLECOMM_MAX 59
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 #define MAG_RUNTIME_RESPONSE_PATH "/tmp/medley-mag-response"
 #define MAG_RUNTIME_SCREENSHOT_PATH "/tmp/medley-mag-screenshot.ppm"
@@ -2989,6 +2989,87 @@ static int ghostty_mag_key(int key_id, GhosttyKey *out_key) {
   }
 }
 
+static int mag_raw_key_to_key_id(int ch) {
+  int low = ch & 255;
+
+  switch (ch) {
+    case 8:
+    case 127:
+      return 11;
+    case 10:
+    case 13:
+      return 12;
+    case 27:
+      return 13;
+    case 9:
+      return 14;
+    case 57344:
+      return 4;
+    case 57345:
+      return 3;
+    case 57346:
+      return 1;
+    case 57347:
+      return 2;
+    case 57348:
+      return 5;
+    case 57349:
+      return 6;
+    case 57350:
+      return 7;
+    case 57351:
+      return 8;
+    case 57352:
+      return 9;
+    case 57353:
+      return 21;
+    case 57354:
+      return 22;
+    case 57355:
+      return 23;
+    case 57356:
+      return 24;
+    case 57357:
+      return 25;
+    case 57358:
+      return 26;
+    case 57359:
+      return 27;
+    case 57360:
+      return 28;
+    case 57361:
+      return 29;
+    case 57362:
+      return 30;
+    case 57363:
+      return 31;
+    case 57364:
+      return 32;
+    default:
+      break;
+  }
+
+  if ((ch >> 8) == 1) {
+    switch (low) {
+      case 82:
+      case 130:
+        return 1;
+      case 69:
+      case 131:
+        return 2;
+      case 87:
+      case 132:
+        return 3;
+      case 84:
+      case 129:
+        return 4;
+      default:
+        break;
+    }
+  }
+  return 0;
+}
+
 static int ghostty_utf8_encode(uint32_t codepoint, char out[4]) {
   if (codepoint == 0) return 0;
   if (codepoint <= 0x7f) {
@@ -4823,6 +4904,15 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 #else
       return (NIL);
 #endif
+    }
+
+    case 59: /* Mag raw Medley key code to canonical terminal key-id */
+    {
+      int raw, key_id;
+
+      N_GETNUMBER(args[1], raw, bad);
+      key_id = mag_raw_key_to_key_id(raw);
+      return (key_id > 0) ? GetSmallp(key_id) : NIL;
     }
 
     default: return (NIL);

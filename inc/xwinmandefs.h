@@ -8,5 +8,6 @@ void enable_Xkeyboard(DspInterface dsp);
 void disable_Xkeyboard(DspInterface dsp);
 void beep_Xkeyboard(DspInterface dsp);
 void process_Xevents(DspInterface dsp);
+void maiko_handle_X_key(XKeyEvent *event, int upflg);
 int mag_inject_typeahead_file(const char *path);
 #endif
