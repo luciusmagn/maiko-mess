@@ -53,6 +53,10 @@ Unix Interface Communications
 #include <ghostty/vt.h>
 #endif
 
+#ifdef XWINDOW
+#include <X11/Xutil.h>
+#endif
+
 #include "address.h"
 #include "adr68k.h"
 #include "gcdata.h"
@@ -68,14 +72,19 @@ Unix Interface Communications
 #include "unixcommdefs.h"
 #include "byteswapdefs.h"
 #include "commondefs.h"
+#include "devif.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 57
+#define MAG_UNIX_HANDLECOMM_MAX 58
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 #define MAG_RUNTIME_RESPONSE_PATH "/tmp/medley-mag-response"
+#define MAG_RUNTIME_SCREENSHOT_PATH "/tmp/medley-mag-screenshot.ppm"
 #define MAG_TELEGRAM_BRIDGE_COMMAND "/home/mag/.local/bin/mag-telegram-bridge"
 #define MAG_TELEGRAM_BRIDGE_LOG "/tmp/mag-telegram-bridge.log"
 extern int mag_inject_typeahead_file(const char *path);
+extern unsigned displaywidth, displayheight, DisplayRasterWidth;
+extern DLword *DisplayRegion68k;
+extern DspInterface currentdsp;
 #else
 #define MAG_UNIX_HANDLECOMM_MAX 48
 #endif
@@ -447,6 +456,110 @@ static int unix_mag_start_telegram_bridge(void) {
   return (int)pid;
 #else
   return -1;
+#endif
+}
+
+#ifdef XWINDOW
+static int unix_mag_display_pixel(unsigned x, unsigned y) {
+  if (currentdsp == NULL || currentdsp->ScreenBitmap.data == NULL) return 0;
+  return XGetPixel(&currentdsp->ScreenBitmap, (int)x, (int)y) != 0;
+}
+#endif
+
+static int unix_mag_export_screenshot(unsigned char *out, int cap) {
+#ifdef XWINDOW
+  static const unsigned char fg[3] = {0, 0, 0};
+  static const unsigned char bg[3] = {255, 255, 232};
+  char tmp[256];
+  FILE *fp;
+  unsigned char *row;
+  unsigned x, y;
+  unsigned width = (currentdsp != NULL && currentdsp->ScreenBitmap.width > 0)
+                       ? (unsigned)currentdsp->ScreenBitmap.width
+                       : displaywidth;
+  unsigned height = (currentdsp != NULL && currentdsp->ScreenBitmap.height > 0)
+                        ? (unsigned)currentdsp->ScreenBitmap.height
+                        : displayheight;
+  int header_len;
+  int saved_errno;
+
+  if (out == NULL || cap <= 0) return -1;
+  if (DisplayRegion68k == NULL || width == 0 || height == 0) {
+    return snprintf((char *)out, (size_t)cap,
+                    "mag-screenshot\nstatus=error\nreason=display-unavailable\n");
+  }
+
+  row = malloc((size_t)width * 3);
+  if (row == NULL) {
+    return snprintf((char *)out, (size_t)cap,
+                    "mag-screenshot\nstatus=error\nreason=malloc-failed\n");
+  }
+
+  snprintf(tmp, sizeof(tmp), "%s.%ld.tmp", MAG_RUNTIME_SCREENSHOT_PATH, (long)getpid());
+  fp = fopen(tmp, "wb");
+  if (fp == NULL) {
+    saved_errno = errno;
+    free(row);
+    return snprintf((char *)out, (size_t)cap,
+                    "mag-screenshot\nstatus=error\nreason=open-failed\nerrno=%d\nmessage=%s\n",
+                    saved_errno, strerror(saved_errno));
+  }
+
+  header_len = fprintf(fp, "P6\n%u %u\n255\n", width, height);
+  if (header_len < 0) {
+    saved_errno = errno;
+    fclose(fp);
+    unlink(tmp);
+    free(row);
+    return snprintf((char *)out, (size_t)cap,
+                    "mag-screenshot\nstatus=error\nreason=header-write-failed\nerrno=%d\nmessage=%s\n",
+                    saved_errno, strerror(saved_errno));
+  }
+
+  for (y = 0; y < height; y++) {
+    for (x = 0; x < width; x++) {
+      const unsigned char *rgb = unix_mag_display_pixel(x, y) ? fg : bg;
+      row[(size_t)x * 3] = rgb[0];
+      row[(size_t)x * 3 + 1] = rgb[1];
+      row[(size_t)x * 3 + 2] = rgb[2];
+    }
+    if (fwrite(row, (size_t)width * 3, 1, fp) != 1) {
+      saved_errno = errno;
+      fclose(fp);
+      unlink(tmp);
+      free(row);
+      return snprintf((char *)out, (size_t)cap,
+                      "mag-screenshot\nstatus=error\nreason=pixel-write-failed\nerrno=%d\nmessage=%s\n",
+                      saved_errno, strerror(saved_errno));
+    }
+  }
+
+  free(row);
+  if (fclose(fp) != 0) {
+    saved_errno = errno;
+    unlink(tmp);
+    return snprintf((char *)out, (size_t)cap,
+                    "mag-screenshot\nstatus=error\nreason=close-failed\nerrno=%d\nmessage=%s\n",
+                    saved_errno, strerror(saved_errno));
+  }
+  if (rename(tmp, MAG_RUNTIME_SCREENSHOT_PATH) != 0) {
+    saved_errno = errno;
+    unlink(tmp);
+    return snprintf((char *)out, (size_t)cap,
+                    "mag-screenshot\nstatus=error\nreason=rename-failed\nerrno=%d\nmessage=%s\n",
+                    saved_errno, strerror(saved_errno));
+  }
+
+  return snprintf((char *)out, (size_t)cap,
+                  "mag-screenshot\nstatus=ok\npath=%s\nformat=ppm-p6\nwidth=%u\nheight=%u\n"
+                  "foreground-rgb=0,0,0\nbackground-rgb=255,255,232\nsource=DisplayRegion68k\n"
+                  "requires-x-focus=no\nbytes=%lu\n",
+                  MAG_RUNTIME_SCREENSHOT_PATH, width, height,
+                  (unsigned long)header_len + ((unsigned long)width * height * 3));
+#else
+  if (out == NULL || cap <= 0) return -1;
+  return snprintf((char *)out, (size_t)cap,
+                  "mag-screenshot\nstatus=error\nreason=xwindow-unavailable\n");
 #endif
 }
 
@@ -3323,6 +3436,8 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*     56 Mag Ghostty drain many, Arg1 = Job #, Arg2 = max reads           */
 /*           => T or NIL                                                   */
 /*     57 Mag start Telegram bridge daemon => child pid or NIL             */
+/*     58 Mag export DisplayRegion screenshot, Arg1 = buffer               */
+/*           => byte count or NIL                                          */
 /*                                                                      */
 /************************************************************************/
 
@@ -4572,6 +4687,23 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 #ifdef XWINDOW
       int pid = unix_mag_start_telegram_bridge();
       return (pid >= 0) ? GetSmallp(pid) : NIL;
+#else
+      return (NIL);
+#endif
+    }
+
+    case 58: /* Mag export DisplayRegion screenshot without depending on X focus */
+    {
+#ifdef XWINDOW
+      DLword *bufp;
+      int n;
+
+      bufp = NativeAligned2FromLAddr(args[1]);
+      n = unix_mag_export_screenshot((unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
 #else
       return (NIL);
 #endif
