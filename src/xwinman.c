@@ -26,6 +26,7 @@
 #include "keysym.h"        // for KEY_* Lisp key codes
 #include "lispemul.h"      // for PUTBASEBIT68K, FALSE, TRUE, DLword, state
 #include "lspglob.h"       // for MiscStats
+#include "magdisplaydefs.h"  // for mag_display_control_redraw_if_needed
 #include "xdefs.h"         // for XLOCK, XUNLOCK
 #include "xlspwindefs.h"   // for DoRing
 #include "xscrolldefs.h"   // for JumpScrollHor, JumpScrollVer, Scroll, Scro...
@@ -525,6 +526,7 @@ void process_Xevents(DspInterface dsp)
   XEvent report;
 
   maybe_inject_startup_typeahead();
+  mag_display_control_redraw_if_needed(dsp);
 
   while (XPending(dsp->display_id)) {
     XNextEvent(dsp->display_id, &report);

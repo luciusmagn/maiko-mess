@@ -11,10 +11,40 @@
 #include "version.h"
 
 #include <X11/Xlib.h>  // for XFlush, XPutImage
+#include <stdlib.h>    // for realloc
+#include <string.h>    // for memcpy
 #include "devif.h"     // for (anonymous), MRegion, DspInterface
 #include "lispemul.h"  // for DLword
+#include "magdisplaydefs.h"  // for mag_display_invert_enabled
 #include "xbbtdefs.h"  // for clipping_Xbitblt
 #include "xdefs.h"     // for XLOCK, XUNLOCK
+
+static XImage *mag_screen_image_for_put(DspInterface dsp) {
+  static char *inverted_data = NULL;
+  static size_t inverted_capacity = 0;
+  static XImage inverted_image;
+  XImage *source = &dsp->ScreenBitmap;
+  size_t size;
+  size_t i;
+
+  if (!mag_display_invert_enabled()) return source;
+  if (source->data == NULL || source->bytes_per_line <= 0 || source->height <= 0) return source;
+
+  size = (size_t)source->bytes_per_line * (size_t)source->height;
+  if (size > inverted_capacity) {
+    char *next = realloc(inverted_data, size);
+    if (next == NULL) return source;
+    inverted_data = next;
+    inverted_capacity = size;
+  }
+
+  memcpy(inverted_data, source->data, size);
+  for (i = 0; i < size; i += 1) inverted_data[i] = (char)~((unsigned char)inverted_data[i]);
+
+  inverted_image = *source;
+  inverted_image.data = inverted_data;
+  return &inverted_image;
+}
 
 /************************************************************************/
 /*									*/
@@ -46,7 +76,7 @@ unsigned long clipping_Xbitblt(DspInterface dsp, DLword *dummy, int x, int y, in
   if ((x >= dsp->Visible.x) && (temp_x <= LowerRightX) && (y >= dsp->Visible.y) &&
       (temp_y <= LowerRightY)) {
     XLOCK;
-    XPutImage(dsp->display_id, dsp->DisplayWindow, dsp->Copy_GC, &dsp->ScreenBitmap, x, y,
+    XPutImage(dsp->display_id, dsp->DisplayWindow, dsp->Copy_GC, mag_screen_image_for_put(dsp), x, y,
               x - dsp->Visible.x, y - dsp->Visible.y, (unsigned)w, (unsigned)h);
     XFlush(dsp->display_id);
     XUNLOCK(dsp);
@@ -73,7 +103,7 @@ unsigned long clipping_Xbitblt(DspInterface dsp, DLword *dummy, int x, int y, in
 
   if ((w > 0) && (h > 0)) {
     XLOCK;
-    XPutImage(dsp->display_id, dsp->DisplayWindow, dsp->Copy_GC, &dsp->ScreenBitmap, x, y,
+    XPutImage(dsp->display_id, dsp->DisplayWindow, dsp->Copy_GC, mag_screen_image_for_put(dsp), x, y,
               x - dsp->Visible.x, y - dsp->Visible.y, (unsigned)w, (unsigned)h);
     XFlush(dsp->display_id);
     XUNLOCK(dsp);

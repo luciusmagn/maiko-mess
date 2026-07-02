@@ -39,6 +39,7 @@ Unix Interface Communications
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -73,12 +74,14 @@ Unix Interface Communications
 #include "byteswapdefs.h"
 #include "commondefs.h"
 #include "devif.h"
+#include "magdisplaydefs.h"
 
 #ifdef XWINDOW
 #define MAG_UNIX_HANDLECOMM_MAX 58
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 #define MAG_RUNTIME_RESPONSE_PATH "/tmp/medley-mag-response"
 #define MAG_RUNTIME_SCREENSHOT_PATH "/tmp/medley-mag-screenshot.ppm"
+#define MAG_DISPLAY_INVERT_PATH "/tmp/medley-mag-display-invert"
 #define MAG_TELEGRAM_BRIDGE_COMMAND "/home/mag/.local/bin/mag-telegram-bridge"
 #define MAG_TELEGRAM_BRIDGE_LOG "/tmp/mag-telegram-bridge.log"
 extern int mag_inject_typeahead_file(const char *path);
@@ -460,6 +463,114 @@ static int unix_mag_start_telegram_bridge(void) {
 }
 
 #ifdef XWINDOW
+static int mag_display_invert_state = 0;
+static int mag_display_control_known = 0;
+static off_t mag_display_control_size = -1;
+static time_t mag_display_control_mtime = 0;
+#ifdef __linux__
+static long mag_display_control_mtimensec = 0;
+#endif
+static volatile sig_atomic_t mag_display_control_poked = 1;
+
+static void mag_display_control_signal(int signo) {
+  (void)signo;
+  mag_display_control_poked = 1;
+}
+
+static void mag_display_control_install_signal(void) {
+  static int installed = 0;
+  struct sigaction action;
+
+  if (installed) return;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = mag_display_control_signal;
+  sigemptyset(&action.sa_mask);
+  action.sa_flags = 0;
+  if (sigaction(SIGUSR1, &action, NULL) == 0) installed = 1;
+}
+
+static int mag_display_control_read_value(void) {
+  char buf[32];
+  ssize_t n;
+  int fd;
+  int i;
+
+  fd = open(MAG_DISPLAY_INVERT_PATH, O_RDONLY);
+  if (fd < 0) return 0;
+  n = read(fd, buf, sizeof(buf) - 1);
+  close(fd);
+  if (n <= 0) return 0;
+  buf[n] = '\0';
+
+  for (i = 0; i < n; i++) {
+    char c = buf[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+    return c == '1' || c == 'd' || c == 'D' || c == 'o' || c == 'O' ||
+           c == 't' || c == 'T' || c == 'y' || c == 'Y';
+  }
+  return 0;
+}
+
+int mag_display_poll_control_file(void) {
+  struct stat st;
+  int changed = 0;
+  int exists;
+  int poked;
+  int next_state;
+
+  mag_display_control_install_signal();
+  poked = mag_display_control_poked;
+  mag_display_control_poked = 0;
+
+  exists = (stat(MAG_DISPLAY_INVERT_PATH, &st) == 0);
+  if (!exists) {
+    if (mag_display_control_known || mag_display_invert_state) {
+      changed = mag_display_invert_state != 0;
+      mag_display_control_known = 0;
+      mag_display_control_size = -1;
+      mag_display_control_mtime = 0;
+#ifdef __linux__
+      mag_display_control_mtimensec = 0;
+#endif
+      mag_display_invert_state = 0;
+    }
+    return changed;
+  }
+
+  if (!poked && mag_display_control_known &&
+      st.st_size == mag_display_control_size &&
+      st.st_mtime == mag_display_control_mtime
+#ifdef __linux__
+      && st.st_mtim.tv_nsec == mag_display_control_mtimensec
+#endif
+      ) {
+    return 0;
+  }
+
+  next_state = mag_display_control_read_value();
+  changed = next_state != mag_display_invert_state;
+  mag_display_invert_state = next_state;
+  mag_display_control_known = 1;
+  mag_display_control_size = st.st_size;
+  mag_display_control_mtime = st.st_mtime;
+#ifdef __linux__
+  mag_display_control_mtimensec = st.st_mtim.tv_nsec;
+#endif
+  return changed;
+}
+
+int mag_display_invert_enabled(void) {
+  mag_display_poll_control_file();
+  return mag_display_invert_state;
+}
+
+void mag_display_control_redraw_if_needed(DspInterface dsp) {
+  if (!mag_display_poll_control_file()) return;
+  if (dsp == NULL || dsp->bitblt_to_screen == NULL || DisplayRegion68k == NULL) return;
+  (dsp->bitblt_to_screen)(dsp, DisplayRegion68k, dsp->Visible.x, dsp->Visible.y,
+                          (int)dsp->Visible.width, (int)dsp->Visible.height);
+}
+
 static int unix_mag_display_pixel(unsigned x, unsigned y) {
   if (currentdsp == NULL || currentdsp->ScreenBitmap.data == NULL) return 0;
   return XGetPixel(&currentdsp->ScreenBitmap, (int)x, (int)y) != 0;
@@ -480,6 +591,7 @@ static int unix_mag_export_screenshot(unsigned char *out, int cap) {
   unsigned height = (currentdsp != NULL && currentdsp->ScreenBitmap.height > 0)
                         ? (unsigned)currentdsp->ScreenBitmap.height
                         : displayheight;
+  int invert = mag_display_invert_enabled();
   int header_len;
   int saved_errno;
 
@@ -518,7 +630,10 @@ static int unix_mag_export_screenshot(unsigned char *out, int cap) {
 
   for (y = 0; y < height; y++) {
     for (x = 0; x < width; x++) {
-      const unsigned char *rgb = unix_mag_display_pixel(x, y) ? fg : bg;
+      int visible = unix_mag_display_pixel(x, y);
+      const unsigned char *rgb;
+      if (invert) visible = !visible;
+      rgb = visible ? fg : bg;
       row[(size_t)x * 3] = rgb[0];
       row[(size_t)x * 3 + 1] = rgb[1];
       row[(size_t)x * 3 + 2] = rgb[2];
@@ -553,8 +668,9 @@ static int unix_mag_export_screenshot(unsigned char *out, int cap) {
   return snprintf((char *)out, (size_t)cap,
                   "mag-screenshot\nstatus=ok\npath=%s\nformat=ppm-p6\nwidth=%u\nheight=%u\n"
                   "foreground-rgb=0,0,0\nbackground-rgb=255,255,232\nsource=DisplayRegion68k\n"
-                  "requires-x-focus=no\nbytes=%lu\n",
+                  "display-invert=%d\nrequires-x-focus=no\nbytes=%lu\n",
                   MAG_RUNTIME_SCREENSHOT_PATH, width, height,
+                  invert,
                   (unsigned long)header_len + ((unsigned long)width * height * 3));
 #else
   if (out == NULL || cap <= 0) return -1;
