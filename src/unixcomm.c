@@ -65,13 +65,12 @@ Unix Interface Communications
 #include "arith.h"
 #include "dbprint.h"
 #include "timeout.h"
-
 #include "unixcommdefs.h"
 #include "byteswapdefs.h"
 #include "commondefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 51
+#define MAG_UNIX_HANDLECOMM_MAX 54
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 extern int mag_inject_typeahead_file(const char *path);
 #else
@@ -385,6 +384,32 @@ static int unix_mag_read_request(unsigned char *out, int cap) {
 
 static int unix_mag_request_available(void) {
   return access("/tmp/medley-mag-request", R_OK) == 0;
+}
+
+static int unix_mag_job_readable(int slot) {
+  fd_set readfds;
+  struct timeval timeout;
+  int result;
+
+  if (!valid_slot(slot)) return 0;
+  switch (UJ[slot].type) {
+    case UJSHELL:
+    case UJPROCESS:
+    case UJSOSTREAM:
+      break;
+    default:
+      return 0;
+  }
+
+  FD_ZERO(&readfds);
+  FD_SET(slot, &readfds);
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 0;
+  do {
+    result = select(slot + 1, &readfds, NULL, NULL, &timeout);
+  } while (result < 0 && errno == EINTR);
+
+  return result > 0 && FD_ISSET(slot, &readfds);
 }
 
 #ifdef MAIKO_ENABLE_GHOSTTY_VT
@@ -1226,6 +1251,32 @@ static void ghostty_job_write(struct unixjob *job, const unsigned char *buf, int
   job->ghostty_render_valid = 0;
 }
 
+static LispPTR ghostty_job_drain_no_copy(int slot) {
+  unsigned char buf[512];
+  int rawdest;
+  int terno;
+
+  if (!valid_slot(slot) || UJ[slot].type != UJSHELL ||
+      UJ[slot].ghostty_terminal == NULL)
+    return NIL;
+
+  rawdest = read(slot, buf, sizeof(buf));
+  if (rawdest > 0) {
+    ghostty_job_write(&UJ[slot], buf, rawdest);
+    return GetSmallp(rawdest);
+  }
+
+  terno = errno;
+  wait_for_comm_processes();
+  if ((UJ[slot].status == -1) &&
+      (((rawdest == 0) && (UJ[slot].type != UJSOSTREAM)) ||
+       ((rawdest < 0) && ((terno == EINTR) || (terno == 0) ||
+                          (terno == EAGAIN) || (terno == EWOULDBLOCK)))))
+    return ATOM_T;
+
+  return NIL;
+}
+
 static int ghostty_job_resize(struct unixjob *job, uint16_t rows, uint16_t cols) {
   if (job->ghostty_terminal == NULL) return 0;
   if (rows == 0 || cols == 0) return 0;
@@ -1691,6 +1742,47 @@ static unsigned char ghostty_box_flags(uint32_t codepoint) {
 
   return flags == 0 ? (GHOSTTY_BOX_LEFT | GHOSTTY_BOX_RIGHT | GHOSTTY_BOX_UP | GHOSTTY_BOX_DOWN)
                     : flags;
+}
+
+static unsigned char ghostty_display_ascii_codepoint(uint32_t codepoint, int invisible) {
+  unsigned char box;
+
+  if (invisible || codepoint < 32) return ' ';
+
+  box = ghostty_box_flags(codepoint);
+  if (box != 0) {
+    int horizontal = (box & (GHOSTTY_BOX_LEFT | GHOSTTY_BOX_RIGHT)) != 0;
+    int vertical = (box & (GHOSTTY_BOX_UP | GHOSTTY_BOX_DOWN)) != 0;
+
+    if (horizontal && !vertical) return '-';
+    if (vertical && !horizontal) return '|';
+    return '+';
+  }
+
+  switch (codepoint) {
+    case 8208: case 8209: case 8210: case 8211: case 8212: case 8213: case 8722:
+      return '-';
+    case 8226: case 8729: case 9679: case 9702: case 9642: case 9643:
+      return '*';
+    case 8249: case 9001: case 10094: case 8592: case 8596: case 8597:
+      return '<';
+    case 8250: case 9002: case 10095: case 9654: case 9656: case 8594:
+    case 8618: case 8627:
+      return '>';
+    case 8593:
+      return '^';
+    case 8595:
+      return 'v';
+    case 10003: case 10004:
+      return 'v';
+    case 10005: case 10006: case 10007: case 10008:
+      return 'x';
+    default:
+      break;
+  }
+
+  if (codepoint >= 32 && codepoint <= 126) return (unsigned char)codepoint;
+  return '?';
 }
 
 static unsigned char ghostty_style_flags(const GhosttyStyle *style) {
@@ -2258,6 +2350,64 @@ static int ghostty_job_copy_row_bmp_plain(struct unixjob *job, int row, unsigned
   ghostty_render_state_row_cells_free(cells);
   ghostty_render_state_row_iterator_free(row_iter);
   return failed ? -1 : cell_count;
+}
+
+static int ghostty_job_copy_row_ascii(struct unixjob *job, int row, unsigned char *out, int cap) {
+  GhosttyRenderStateRowIterator row_iter = NULL;
+  GhosttyRenderStateRowCells cells = NULL;
+  GhosttyResult result;
+  int y = 0;
+  int n = 0;
+  int last_nonblank_n = 0;
+  int failed = 0;
+
+  if (out == NULL || cap <= 0) return -1;
+  if (row < 0) return -1;
+  if (ghostty_job_update(job) < 0) return -1;
+  result = ghostty_render_state_row_iterator_new(NULL, &row_iter);
+  if (result != GHOSTTY_SUCCESS) return -1;
+  result = ghostty_render_state_get(job->ghostty_render,
+                                    GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
+                                    &row_iter);
+  if (result != GHOSTTY_SUCCESS) {
+    ghostty_render_state_row_iterator_free(row_iter);
+    return -1;
+  }
+  result = ghostty_render_state_row_cells_new(NULL, &cells);
+  if (result != GHOSTTY_SUCCESS) {
+    ghostty_render_state_row_iterator_free(row_iter);
+    return -1;
+  }
+
+  while (ghostty_render_state_row_iterator_next(row_iter)) {
+    if (y == row) {
+      result = ghostty_render_state_row_get(row_iter,
+                                            GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+                                            &cells);
+      if (result != GHOSTTY_SUCCESS) {
+        failed = 1;
+        break;
+      }
+
+      while (n < cap && ghostty_render_state_row_cells_next(cells)) {
+        uint32_t codepoint = ghostty_cell_codepoint(cells);
+        int invisible = 0;
+        unsigned char ch;
+
+        (void)ghostty_cell_flags(cells, codepoint, &invisible);
+        ch = ghostty_display_ascii_codepoint(codepoint, invisible);
+        out[n++] = ch;
+        if (ch != ' ') last_nonblank_n = n;
+      }
+      n = last_nonblank_n;
+      break;
+    }
+    y++;
+  }
+
+  ghostty_render_state_row_cells_free(cells);
+  ghostty_render_state_row_iterator_free(row_iter);
+  return failed ? -1 : n;
 }
 
 static int ghostty_job_copy_row_bmp_colored_segment(struct unixjob *job, int row, int start_cell,
@@ -4233,6 +4383,41 @@ LispPTR Unix_handlecomm(LispPTR *args) {
     case 51: /* Mag debug request availability probe; no Lisp buffer argument */
       return unix_mag_request_available() ? ATOM_T : NIL;
 
+    case 52: /* Mag shell/process fd readable probe; no Lisp buffer argument */
+      N_GETNUMBER(args[1], slot, bad);
+      return unix_mag_job_readable(slot) ? ATOM_T : NIL;
+
+    case 53: /* Mag Ghostty shell drain without copying PTY bytes into Lisp memory */
+    {
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+      N_GETNUMBER(args[1], slot, bad);
+      return ghostty_job_drain_no_copy(slot);
+#else
+      return (NIL);
+#endif
+    }
+
+    case 54: /* Ghostty VT copy row as simple ASCII display text */
+    {
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+      DLword *bufp;
+      int row, n;
+
+      N_GETNUMBER(args[1], slot, bad);
+      N_GETNUMBER(args[2], row, bad);
+      if (!valid_slot(slot) || UJ[slot].type != UJSHELL) return (NIL);
+
+      bufp = NativeAligned2FromLAddr(args[3]);
+      n = ghostty_job_copy_row_ascii(&UJ[slot], row, (unsigned char *)bufp, 512);
+#ifdef BYTESWAP
+      word_swap_page(bufp, 128);
+#endif /* BYTESWAP */
+      return (n >= 0) ? GetSmallp(n) : NIL;
+#else
+      return (NIL);
+#endif
+    }
+
     default: return (NIL);
   }
 
@@ -4240,7 +4425,6 @@ bad:
   DBPRINT(("Bad input value."));
   return (NIL);
 }
-
 /************************************************************************/
 /*									*/
 /*		W r i t e L i s p S t r i n g T o P i p e		*/
