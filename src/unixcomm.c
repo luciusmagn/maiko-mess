@@ -70,9 +70,11 @@ Unix Interface Communications
 #include "commondefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 56
+#define MAG_UNIX_HANDLECOMM_MAX 57
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 #define MAG_RUNTIME_RESPONSE_PATH "/tmp/medley-mag-response"
+#define MAG_TELEGRAM_BRIDGE_COMMAND "/home/mag/.local/bin/mag-telegram-bridge"
+#define MAG_TELEGRAM_BRIDGE_LOG "/tmp/mag-telegram-bridge.log"
 extern int mag_inject_typeahead_file(const char *path);
 #else
 #define MAG_UNIX_HANDLECOMM_MAX 48
@@ -419,6 +421,33 @@ static int unix_mag_write_response(LispPTR text) {
     return -1;
   }
   return (int)len;
+}
+
+static int unix_mag_start_telegram_bridge(void) {
+#ifdef XWINDOW
+  pid_t pid = fork();
+  if (pid < 0) return -1;
+  if (pid == 0) {
+    int fd;
+    setsid();
+    fd = open("/dev/null", O_RDONLY);
+    if (fd >= 0) {
+      dup2(fd, STDIN_FILENO);
+      if (fd > STDERR_FILENO) close(fd);
+    }
+    fd = open(MAG_TELEGRAM_BRIDGE_LOG, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (fd >= 0) {
+      dup2(fd, STDOUT_FILENO);
+      dup2(fd, STDERR_FILENO);
+      if (fd > STDERR_FILENO) close(fd);
+    }
+    execl(MAG_TELEGRAM_BRIDGE_COMMAND, "mag-telegram-bridge", "--daemon", (char *)NULL);
+    _exit(127);
+  }
+  return (int)pid;
+#else
+  return -1;
+#endif
 }
 
 static int unix_mag_job_readable(int slot) {
@@ -3280,6 +3309,20 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*           => byte count or NIL                                          */
 /*     48 Mag Gopher type tag, Arg1 = type byte, Arg2 = buffer             */
 /*           => byte count or NIL                                          */
+/*     49 Mag runtime typeahead injection                                  */
+/*           => injected byte count or NIL                                 */
+/*     50 Mag GC table status, Arg1 = buffer => byte count or NIL          */
+/*     51 Mag debug request availability probe => T or NIL                 */
+/*     52 Mag shell/process fd readable probe, Arg1 = Job # => T or NIL    */
+/*     53 Mag Ghostty shell drain without Lisp byte copy, Arg1 = Job #     */
+/*           => T or NIL                                                   */
+/*     54 Ghostty VT copy row as simple ASCII, Arg1 = Job #, Arg2 = row,   */
+/*           Arg3 = buffer => byte count or NIL                            */
+/*     55 Mag debug response writer, Arg1 = Lisp string                    */
+/*           => byte count or NIL                                          */
+/*     56 Mag Ghostty drain many, Arg1 = Job #, Arg2 = max reads           */
+/*           => T or NIL                                                   */
+/*     57 Mag start Telegram bridge daemon => child pid or NIL             */
 /*                                                                      */
 /************************************************************************/
 
@@ -4519,6 +4562,16 @@ LispPTR Unix_handlecomm(LispPTR *args) {
       N_GETNUMBER(args[1], slot, bad);
       N_GETNUMBER(args[2], max_reads, bad);
       return ghostty_job_drain_many_no_copy(slot, max_reads);
+#else
+      return (NIL);
+#endif
+    }
+
+    case 57: /* Mag start Telegram bridge daemon without Medley ShellCommand */
+    {
+#ifdef XWINDOW
+      int pid = unix_mag_start_telegram_bridge();
+      return (pid >= 0) ? GetSmallp(pid) : NIL;
 #else
       return (NIL);
 #endif
