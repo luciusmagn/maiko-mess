@@ -71,7 +71,7 @@ Unix Interface Communications
 #include "commondefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 50
+#define MAG_UNIX_HANDLECOMM_MAX 51
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 extern int mag_inject_typeahead_file(const char *path);
 #else
@@ -381,6 +381,10 @@ static int unix_mag_read_request(unsigned char *out, int cap) {
   out[n] = '\0';
   unlink(path);
   return (int)n;
+}
+
+static int unix_mag_request_available(void) {
+  return access("/tmp/medley-mag-request", R_OK) == 0;
 }
 
 #ifdef MAIKO_ENABLE_GHOSTTY_VT
@@ -4225,6 +4229,9 @@ LispPTR Unix_handlecomm(LispPTR *args) {
 #endif /* BYTESWAP */
       return (n >= 0 && n < 512) ? GetSmallp(n) : NIL;
     }
+
+    case 51: /* Mag debug request availability probe; no Lisp buffer argument */
+      return unix_mag_request_available() ? ATOM_T : NIL;
 
     default: return (NIL);
   }
