@@ -70,8 +70,9 @@ Unix Interface Communications
 #include "commondefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 54
+#define MAG_UNIX_HANDLECOMM_MAX 56
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
+#define MAG_RUNTIME_RESPONSE_PATH "/tmp/medley-mag-response"
 extern int mag_inject_typeahead_file(const char *path);
 #else
 #define MAG_UNIX_HANDLECOMM_MAX 48
@@ -384,6 +385,40 @@ static int unix_mag_read_request(unsigned char *out, int cap) {
 
 static int unix_mag_request_available(void) {
   return access("/tmp/medley-mag-request", R_OK) == 0;
+}
+
+static int unix_mag_write_response(LispPTR text) {
+  char buf[8192];
+  char tmp[256];
+  int fd;
+  size_t len;
+  ssize_t written;
+  size_t offset = 0;
+
+  LispStringToCString(text, buf, sizeof(buf));
+  len = strlen(buf);
+  snprintf(tmp, sizeof(tmp), "%s.%ld.tmp", MAG_RUNTIME_RESPONSE_PATH, (long)getpid());
+  fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) return -1;
+  while (offset < len) {
+    written = write(fd, buf + offset, len - offset);
+    if (written < 0) {
+      if (errno == EINTR) continue;
+      close(fd);
+      unlink(tmp);
+      return -1;
+    }
+    offset += (size_t)written;
+  }
+  if (close(fd) != 0) {
+    unlink(tmp);
+    return -1;
+  }
+  if (rename(tmp, MAG_RUNTIME_RESPONSE_PATH) != 0) {
+    unlink(tmp);
+    return -1;
+  }
+  return (int)len;
 }
 
 static int unix_mag_job_readable(int slot) {
@@ -1253,18 +1288,67 @@ static void ghostty_job_write(struct unixjob *job, const unsigned char *buf, int
 
 static LispPTR ghostty_job_drain_no_copy(int slot) {
   unsigned char buf[512];
-  int rawdest;
-  int terno;
+  int rawdest = -1;
+  int terno = EAGAIN;
 
   if (!valid_slot(slot) || UJ[slot].type != UJSHELL ||
       UJ[slot].ghostty_terminal == NULL)
     return NIL;
 
-  rawdest = read(slot, buf, sizeof(buf));
+  if (!unix_mag_job_readable(slot)) {
+    wait_for_comm_processes();
+    return (UJ[slot].status == -1) ? ATOM_T : NIL;
+  }
+
+  do {
+    rawdest = read(slot, buf, sizeof(buf));
+  } while (rawdest < 0 && errno == EINTR);
+
   if (rawdest > 0) {
     ghostty_job_write(&UJ[slot], buf, rawdest);
     return GetSmallp(rawdest);
   }
+
+  terno = errno;
+  wait_for_comm_processes();
+  if ((UJ[slot].status == -1) &&
+      (((rawdest == 0) && (UJ[slot].type != UJSOSTREAM)) ||
+       ((rawdest < 0) && ((terno == EINTR) || (terno == 0) ||
+                          (terno == EAGAIN) || (terno == EWOULDBLOCK)))))
+    return ATOM_T;
+
+  return NIL;
+}
+
+static LispPTR ghostty_job_drain_many_no_copy(int slot, int max_reads) {
+  unsigned char buf[512];
+  int reads = 0;
+  int total = 0;
+  int rawdest = -1;
+  int terno = EAGAIN;
+
+  if (!valid_slot(slot) || UJ[slot].type != UJSHELL ||
+      UJ[slot].ghostty_terminal == NULL)
+    return NIL;
+
+  if (max_reads <= 0) max_reads = 32;
+  if (max_reads > 64) max_reads = 64;
+
+  while (reads < max_reads) {
+    if (!unix_mag_job_readable(slot)) break;
+    do {
+      rawdest = read(slot, buf, sizeof(buf));
+    } while (rawdest < 0 && errno == EINTR);
+    if (rawdest > 0) {
+      ghostty_job_write(&UJ[slot], buf, rawdest);
+      total += rawdest;
+      reads++;
+      continue;
+    }
+    break;
+  }
+
+  if (total > 0) return GetSmallp(total);
 
   terno = errno;
   wait_for_comm_processes();
@@ -4413,6 +4497,28 @@ LispPTR Unix_handlecomm(LispPTR *args) {
       word_swap_page(bufp, 128);
 #endif /* BYTESWAP */
       return (n >= 0) ? GetSmallp(n) : NIL;
+#else
+      return (NIL);
+#endif
+    }
+
+    case 55: /* Mag debug response writer; avoids Lisp OPENSTREAM on every RPC reply */
+    {
+#ifdef XWINDOW
+      int n = unix_mag_write_response(args[1]);
+      return (n >= 0) ? GetSmallp(n) : NIL;
+#else
+      return (NIL);
+#endif
+    }
+
+    case 56: /* Mag Ghostty drain many PTY chunks without Lisp/native round-trips */
+    {
+#ifdef MAIKO_ENABLE_GHOSTTY_VT
+      int max_reads;
+      N_GETNUMBER(args[1], slot, bad);
+      N_GETNUMBER(args[2], max_reads, bad);
+      return ghostty_job_drain_many_no_copy(slot, max_reads);
 #else
       return (NIL);
 #endif
