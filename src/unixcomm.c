@@ -78,7 +78,7 @@ Unix Interface Communications
 #include "magdisplaydefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 60
+#define MAG_UNIX_HANDLECOMM_MAX 61
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 #define MAG_RUNTIME_RESPONSE_PATH "/tmp/medley-mag-response"
 #define MAG_RUNTIME_SCREENSHOT_PATH "/tmp/medley-mag-screenshot.ppm"
@@ -3640,6 +3640,8 @@ static int FindAvailablePty(char *Slave, size_t SlaveLen) {
 /*     57 Mag start Telegram bridge daemon => child pid or NIL             */
 /*     58 Mag export DisplayRegion screenshot, Arg1 = buffer               */
 /*           => byte count or NIL                                          */
+/*     61 Mag reset deferred display state and flush full display buffer    */
+/*           => T or NIL                                                   */
 /*                                                                      */
 /************************************************************************/
 
@@ -4941,6 +4943,20 @@ LispPTR Unix_handlecomm(LispPTR *args) {
         default:
           return (NIL);
       }
+    }
+
+    case 61: /* Mag force full physical display flush */
+    {
+#ifdef XWINDOW
+      if (currentdsp == NULL || currentdsp->bitblt_to_screen == NULL || DisplayRegion68k == NULL) {
+        return (NIL);
+      }
+      mag_display_flush_defer_reset();
+      flush_display_buffer();
+      return ATOM_T;
+#else
+      return (NIL);
+#endif
     }
 
     default: return (NIL);
