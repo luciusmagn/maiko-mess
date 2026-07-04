@@ -74,10 +74,106 @@ extern DLword *EmCursorBitMap68K;
 
 int DebugDSP = T;
 
+static int mag_display_flush_defer_level = 0;
+static int mag_display_flush_defer_has_dirty = 0;
+static int mag_display_flush_defer_x0 = 0;
+static int mag_display_flush_defer_y0 = 0;
+static int mag_display_flush_defer_x1 = 0;
+static int mag_display_flush_defer_y1 = 0;
+
 #ifdef COLOR
 extern DLword *ColorDisplayRegion68k;
 extern int MonoOrColor;
 #endif /* COLOR */
+
+static void mag_display_flush_defer_note_region(int x, int y, int w, int h)
+{
+  int x1, y1;
+
+  if (w <= 0 || h <= 0) return;
+
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (y < 0) {
+    h += y;
+    y = 0;
+  }
+  if (w <= 0 || h <= 0) return;
+  if (x >= (int)displaywidth || y >= (int)displayheight) return;
+
+  x1 = x + w;
+  y1 = y + h;
+  if (x1 > (int)displaywidth) x1 = (int)displaywidth;
+  if (y1 > (int)displayheight) y1 = (int)displayheight;
+  if (x1 <= x || y1 <= y) return;
+
+  if (!mag_display_flush_defer_has_dirty) {
+    mag_display_flush_defer_x0 = x;
+    mag_display_flush_defer_y0 = y;
+    mag_display_flush_defer_x1 = x1;
+    mag_display_flush_defer_y1 = y1;
+    mag_display_flush_defer_has_dirty = 1;
+    return;
+  }
+
+  if (x < mag_display_flush_defer_x0) mag_display_flush_defer_x0 = x;
+  if (y < mag_display_flush_defer_y0) mag_display_flush_defer_y0 = y;
+  if (x1 > mag_display_flush_defer_x1) mag_display_flush_defer_x1 = x1;
+  if (y1 > mag_display_flush_defer_y1) mag_display_flush_defer_y1 = y1;
+}
+
+static int mag_display_flush_defer_record_if_active(int x, int y, int w, int h)
+{
+  if (mag_display_flush_defer_level <= 0) return 0;
+  mag_display_flush_defer_note_region(x, y, w, h);
+  return 1;
+}
+
+int mag_display_flush_defer_begin(void)
+{
+  if (mag_display_flush_defer_level < 1000000) mag_display_flush_defer_level++;
+  return mag_display_flush_defer_level;
+}
+
+int mag_display_flush_defer_end(int flush)
+{
+  int x, y, w, h;
+
+  if (mag_display_flush_defer_level > 0) mag_display_flush_defer_level--;
+  if (mag_display_flush_defer_level != 0) return mag_display_flush_defer_level;
+  if (!flush) {
+    mag_display_flush_defer_has_dirty = 0;
+    return 0;
+  }
+  if (!mag_display_flush_defer_has_dirty) return 0;
+
+  x = mag_display_flush_defer_x0;
+  y = mag_display_flush_defer_y0;
+  w = mag_display_flush_defer_x1 - mag_display_flush_defer_x0;
+  h = mag_display_flush_defer_y1 - mag_display_flush_defer_y0;
+  mag_display_flush_defer_has_dirty = 0;
+  flush_display_region(x, y, w, h);
+  return 0;
+}
+
+int mag_display_flush_defer_reset(void)
+{
+  mag_display_flush_defer_level = 0;
+  mag_display_flush_defer_has_dirty = 0;
+  return 0;
+}
+
+int mag_display_flush_defer_depth(void)
+{
+  return mag_display_flush_defer_level;
+}
+
+int mag_display_flush_defer_dirty(void)
+{
+  return mag_display_flush_defer_has_dirty;
+}
 
 #ifdef SDL
 extern void sdl_notify_damage(int, int, int, int);
@@ -270,6 +366,16 @@ in_display_segment(baseaddr)
 /************************************************************************/
 
 void flush_display_buffer(void) {
+#if defined(XWINDOW) || defined(DOS)
+  if (mag_display_flush_defer_record_if_active(currentdsp->Visible.x, currentdsp->Visible.y,
+                                               currentdsp->Visible.width,
+                                               currentdsp->Visible.height))
+    return;
+#else
+  if (mag_display_flush_defer_record_if_active(0, 0, (int)displaywidth, (int)displayheight))
+    return;
+#endif
+
 #ifdef SDL
   sdl_notify_damage(0, 0, sdl_displaywidth, sdl_displayheight);
 #endif
@@ -301,6 +407,8 @@ void flush_display_buffer(void) {
 void flush_display_region(int x, int y, int w, int h)
 {
   //  printf("flush_display_region %d %d %d %d\n", x, y, w, h);
+  if (mag_display_flush_defer_record_if_active(x, y, w, h)) return;
+
 #ifdef SDL
   sdl_notify_damage(x, y, w, h);
 #endif
@@ -347,6 +455,8 @@ void flush_display_lineregion(UNSIGNED x, DLword *ybase, int w, int h)
   int y;
   y = ((DLword *)ybase - DisplayRegion68k) / DLWORD_PERLINE;
   //  printf("flush_display_lineregion %d %d %d %d\n", x, y, w, h);
+  if (mag_display_flush_defer_record_if_active((int)x, y, w, h)) return;
+
 #ifdef SDL
   sdl_notify_damage(x, y, w, h);
 #endif
@@ -381,6 +491,8 @@ void flush_display_ptrregion(DLword *ybase, UNSIGNED bitoffset, int w, int h)
   y = baseoffset / DLWORD_PERLINE;
   x = bitoffset + (BITSPERWORD * (baseoffset - (DLWORD_PERLINE * y)));
   //  printf("flush_display_ptrregion %d %d %d %d\n", x, y, w, h);
+  if (mag_display_flush_defer_record_if_active(x, y, w, h)) return;
+
 #ifdef SDL
   sdl_notify_damage(x, y, w, h);
 #endif

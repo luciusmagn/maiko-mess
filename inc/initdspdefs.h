@@ -12,4 +12,9 @@ void flush_display_region(int x, int y, int w, int h);
 void byte_swapped_displayregion(int x, int y, int w, int h);
 void flush_display_lineregion(UNSIGNED x, DLword *ybase, int w, int h);
 void flush_display_ptrregion(DLword *ybase, UNSIGNED bitoffset, int w, int h);
+int mag_display_flush_defer_begin(void);
+int mag_display_flush_defer_end(int flush);
+int mag_display_flush_defer_reset(void);
+int mag_display_flush_defer_depth(void);
+int mag_display_flush_defer_dirty(void);
 #endif

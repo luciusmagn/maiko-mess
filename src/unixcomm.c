@@ -69,6 +69,7 @@ Unix Interface Communications
 #include "stack.h"
 #include "arith.h"
 #include "dbprint.h"
+#include "initdspdefs.h"
 #include "timeout.h"
 #include "unixcommdefs.h"
 #include "byteswapdefs.h"
@@ -77,7 +78,7 @@ Unix Interface Communications
 #include "magdisplaydefs.h"
 
 #ifdef XWINDOW
-#define MAG_UNIX_HANDLECOMM_MAX 59
+#define MAG_UNIX_HANDLECOMM_MAX 60
 #define MAG_RUNTIME_TYPEAHEAD_PATH "/tmp/medley-mag-typeahead"
 #define MAG_RUNTIME_RESPONSE_PATH "/tmp/medley-mag-response"
 #define MAG_RUNTIME_SCREENSHOT_PATH "/tmp/medley-mag-screenshot.ppm"
@@ -798,6 +799,8 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "unix-helper=%d alive=%d\n"
                   "unix-pipes=%d/%d\n"
                   "unix-handlecomm-max=%d\n"
+                  "display-flush-defer-depth=%d\n"
+                  "display-flush-defer-dirty=%d\n"
                   "nprocs=%d\n"
                   "jobs-used=%d\n"
                   "shells=%d\n"
@@ -826,6 +829,8 @@ static int unix_mag_debug_status(unsigned char *out, int cap) {
                   "%s\n",
                   (long)getpid(), UnixPID, unix_helper_alive,
                   UnixPipeIn, UnixPipeOut, MAG_UNIX_HANDLECOMM_MAX,
+                  mag_display_flush_defer_depth(),
+                  mag_display_flush_defer_dirty(),
                   NPROCS, used, shells, processes,
                   sockets, streams, ghostty_shells, ghostty_render_valid,
                   (unsigned long long)ghostty_vt_write_calls,
@@ -4913,6 +4918,29 @@ LispPTR Unix_handlecomm(LispPTR *args) {
       N_GETNUMBER(args[1], raw, bad);
       key_id = mag_raw_key_to_key_id(raw);
       return (key_id > 0) ? GetSmallp(key_id) : NIL;
+    }
+
+    case 60: /* Mag scoped display flush deferral */
+    {
+      int action;
+
+      N_GETNUMBER(args[1], action, bad);
+      switch (action) {
+        case 0:
+          return GetSmallp(mag_display_flush_defer_depth());
+        case 1:
+          return GetSmallp(mag_display_flush_defer_begin());
+        case 2:
+          return GetSmallp(mag_display_flush_defer_end(1));
+        case 3:
+          return GetSmallp(mag_display_flush_defer_reset());
+        case 4:
+          return GetSmallp(mag_display_flush_defer_end(0));
+        case 5:
+          return mag_display_flush_defer_dirty() ? ATOM_T : NIL;
+        default:
+          return (NIL);
+      }
     }
 
     default: return (NIL);
